@@ -1,11 +1,15 @@
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
-use std::collections::HashSet;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum AdMode { Normal, Advantage, Disadvantage }
+pub enum AdMode {
+    Normal,
+    Advantage,
+    Disadvantage,
+}
 
 pub struct Dice {
     rng: ChaCha8Rng,
@@ -74,7 +78,14 @@ pub fn ability_mod(score: i32) -> i32 {
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum Ability { Str, Dex, Con, Int, Wis, Cha }
+pub enum Ability {
+    Str,
+    Dex,
+    Con,
+    Int,
+    Wis,
+    Cha,
+}
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
