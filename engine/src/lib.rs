@@ -1,5 +1,6 @@
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
+use std::collections::HashSet;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum AdMode {
@@ -37,7 +38,7 @@ impl Dice {
     }
 }
 
-/* ---------------- new: typed check API ---------------- */
+/* ---------------- typed check API ---------------- */
 
 #[derive(Debug, Clone, Copy)]
 pub struct CheckInput {
@@ -68,6 +69,151 @@ pub fn check(dice: &mut Dice, input: CheckInput) -> CheckResult {
 
 /// D&D ability modifier = floor((score - 10) / 2) for integer scores.
 pub fn ability_mod(score: i32) -> i32 {
-    // `div_euclid` with positive divisor matches mathematical floor division.
     (score - 10).div_euclid(2)
+}
+
+/* ---------------- abilities, skills, actor ---------------- */
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum Ability {
+    Str,
+    Dex,
+    Con,
+    Int,
+    Wis,
+    Cha,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum Skill {
+    Athletics, // STR
+    Acrobatics,
+    SleightOfHand,
+    Stealth, // DEX
+    Arcana,
+    History,
+    Investigation,
+    Nature,
+    Religion, // INT
+    AnimalHandling,
+    Insight,
+    Medicine,
+    Perception,
+    Survival, // WIS
+    Deception,
+    Intimidation,
+    Performance,
+    Persuasion, // CHA
+}
+
+impl Skill {
+    pub fn key_ability(&self) -> Ability {
+        use Ability::*;
+        match self {
+            Skill::Athletics => Str,
+            Skill::Acrobatics | Skill::SleightOfHand | Skill::Stealth => Dex,
+            Skill::Arcana
+            | Skill::History
+            | Skill::Investigation
+            | Skill::Nature
+            | Skill::Religion => Int,
+            Skill::AnimalHandling
+            | Skill::Insight
+            | Skill::Medicine
+            | Skill::Perception
+            | Skill::Survival => Wis,
+            Skill::Deception | Skill::Intimidation | Skill::Performance | Skill::Persuasion => Cha,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct AbilityScores {
+    pub str_: i32,
+    pub dex: i32,
+    pub con: i32,
+    pub int_: i32,
+    pub wis: i32,
+    pub cha: i32,
+}
+
+impl AbilityScores {
+    pub fn get(&self, a: Ability) -> i32 {
+        match a {
+            Ability::Str => self.str_,
+            Ability::Dex => self.dex,
+            Ability::Con => self.con,
+            Ability::Int => self.int_,
+            Ability::Wis => self.wis,
+            Ability::Cha => self.cha,
+        }
+    }
+    pub fn mod_of(&self, a: Ability) -> i32 {
+        ability_mod(self.get(a))
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Actor {
+    pub abilities: AbilityScores,
+    pub proficiency_bonus: i32,
+    pub save_proficiencies: HashSet<Ability>,
+    pub skill_proficiencies: HashSet<Skill>,
+}
+
+impl Actor {
+    pub fn ability_mod(&self, a: Ability) -> i32 {
+        self.abilities.mod_of(a)
+    }
+
+    pub fn save_mod(&self, a: Ability) -> i32 {
+        let base = self.ability_mod(a);
+        let prof = if self.save_proficiencies.contains(&a) {
+            self.proficiency_bonus
+        } else {
+            0
+        };
+        base + prof
+    }
+
+    pub fn skill_mod(&self, s: Skill) -> i32 {
+        let base = self.ability_mod(s.key_ability());
+        let prof = if self.skill_proficiencies.contains(&s) {
+            self.proficiency_bonus
+        } else {
+            0
+        };
+        base + prof
+    }
+
+    pub fn ability_check(&self, dice: &mut Dice, a: Ability, mode: AdMode, dc: i32) -> CheckResult {
+        check(
+            dice,
+            CheckInput {
+                dc,
+                modifier: self.ability_mod(a),
+                mode,
+            },
+        )
+    }
+    pub fn skill_check(&self, dice: &mut Dice, s: Skill, mode: AdMode, dc: i32) -> CheckResult {
+        check(
+            dice,
+            CheckInput {
+                dc,
+                modifier: self.skill_mod(s),
+                mode,
+            },
+        )
+    }
+    pub fn saving_throw(&self, dice: &mut Dice, a: Ability, mode: AdMode, dc: i32) -> CheckResult {
+        check(
+            dice,
+            CheckInput {
+                dc,
+                modifier: self.save_mod(a),
+                mode,
+            },
+        )
+    }
 }
