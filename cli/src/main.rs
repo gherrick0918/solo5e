@@ -73,16 +73,14 @@ fn main() {
         } => {
             let mode = to_mode(adv);
             let mut dice = Dice::from_seed(seed);
-            let roll = dice.d20(mode) as i32;
-            let total = roll + modifier;
-            let pass = total >= dc;
+            let res = engine::check(&mut dice, engine::CheckInput { dc, modifier, mode });
             println!(
                 "roll={} mod={} total={} dc={} => {}",
-                roll,
+                res.roll,
                 modifier,
-                total,
-                dc,
-                if pass { "SUCCESS" } else { "FAIL" }
+                res.total,
+                res.dc,
+                if res.passed { "SUCCESS" } else { "FAIL" }
             );
         }
     }
