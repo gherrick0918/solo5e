@@ -1,4 +1,4 @@
-use engine::{AdMode, CheckInput, Dice, ability_mod, check};
+use engine::{ability_mod, check, AdMode, CheckInput, Dice};
 
 #[test]
 fn ability_mod_rounds_down() {
