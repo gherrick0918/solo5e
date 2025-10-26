@@ -1,16 +1,28 @@
-use std::collections::HashSet;
 use engine::{Ability, AbilityScores, Actor, AdMode, Dice, Skill};
+use std::collections::HashSet;
 
 fn sample_fighter() -> Actor {
     // L1 Fighter example: PB +2, STR/CON saves, Athletics + Perception
-    let abilities = AbilityScores { str_: 16, dex: 14, con: 14, int_: 10, wis: 12, cha: 8 };
+    let abilities = AbilityScores {
+        str_: 16,
+        dex: 14,
+        con: 14,
+        int_: 10,
+        wis: 12,
+        cha: 8,
+    };
     let mut save = HashSet::new();
     save.insert(Ability::Str);
     save.insert(Ability::Con);
     let mut skills = HashSet::new();
     skills.insert(Skill::Athletics);
     skills.insert(Skill::Perception);
-    Actor { abilities, proficiency_bonus: 2, save_proficiencies: save, skill_proficiencies: skills }
+    Actor {
+        abilities,
+        proficiency_bonus: 2,
+        save_proficiencies: save,
+        skill_proficiencies: skills,
+    }
 }
 
 #[test]

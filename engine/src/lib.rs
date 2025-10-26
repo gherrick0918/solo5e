@@ -7,19 +7,31 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "lowercase")]
 pub enum AdMode { Normal, Advantage, Disadvantage }
 
-pub struct Dice { rng: ChaCha8Rng }
+pub struct Dice {
+    rng: ChaCha8Rng,
+}
 
 impl Dice {
     pub fn from_seed(seed: u64) -> Self {
-        Self { rng: ChaCha8Rng::seed_from_u64(seed) }
+        Self {
+            rng: ChaCha8Rng::seed_from_u64(seed),
+        }
     }
 
     pub fn d20(&mut self, mode: AdMode) -> u8 {
         let mut roll = || self.rng.gen_range(1..=20);
         match mode {
             AdMode::Normal => roll(),
-            AdMode::Advantage => { let a = roll(); let b = roll(); a.max(b) }
-            AdMode::Disadvantage => { let a = roll(); let b = roll(); a.min(b) }
+            AdMode::Advantage => {
+                let a = roll();
+                let b = roll();
+                a.max(b)
+            }
+            AdMode::Disadvantage => {
+                let a = roll();
+                let b = roll();
+                a.min(b)
+            }
         }
     }
 }
@@ -45,7 +57,12 @@ pub struct CheckResult {
 pub fn check(dice: &mut Dice, input: CheckInput) -> CheckResult {
     let roll = dice.d20(input.mode) as i32;
     let total = roll + input.modifier;
-    CheckResult { roll, total, dc: input.dc, passed: total >= input.dc }
+    CheckResult {
+        roll,
+        total,
+        dc: input.dc,
+        passed: total >= input.dc,
+    }
 }
 
 /// D&D ability modifier = floor((score - 10) / 2) for integer scores.
@@ -62,11 +79,24 @@ pub enum Ability { Str, Dex, Con, Int, Wis, Cha }
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Skill {
-    Athletics,                // STR
-    Acrobatics, SleightOfHand, Stealth, // DEX
-    Arcana, History, Investigation, Nature, Religion, // INT
-    AnimalHandling, Insight, Medicine, Perception, Survival, // WIS
-    Deception, Intimidation, Performance, Persuasion, // CHA
+    Athletics, // STR
+    Acrobatics,
+    SleightOfHand,
+    Stealth, // DEX
+    Arcana,
+    History,
+    Investigation,
+    Nature,
+    Religion, // INT
+    AnimalHandling,
+    Insight,
+    Medicine,
+    Perception,
+    Survival, // WIS
+    Deception,
+    Intimidation,
+    Performance,
+    Persuasion, // CHA
 }
 
 impl Skill {
@@ -75,8 +105,16 @@ impl Skill {
         match self {
             Skill::Athletics => Str,
             Skill::Acrobatics | Skill::SleightOfHand | Skill::Stealth => Dex,
-            Skill::Arcana | Skill::History | Skill::Investigation | Skill::Nature | Skill::Religion => Int,
-            Skill::AnimalHandling | Skill::Insight | Skill::Medicine | Skill::Perception | Skill::Survival => Wis,
+            Skill::Arcana
+            | Skill::History
+            | Skill::Investigation
+            | Skill::Nature
+            | Skill::Religion => Int,
+            Skill::AnimalHandling
+            | Skill::Insight
+            | Skill::Medicine
+            | Skill::Perception
+            | Skill::Survival => Wis,
             Skill::Deception | Skill::Intimidation | Skill::Performance | Skill::Persuasion => Cha,
         }
     }
@@ -109,7 +147,9 @@ impl AbilityScores {
             Ability::Cha => self.cha,
         }
     }
-    pub fn mod_of(&self, a: Ability) -> i32 { ability_mod(self.get(a)) }
+    pub fn mod_of(&self, a: Ability) -> i32 {
+        ability_mod(self.get(a))
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -121,27 +161,58 @@ pub struct Actor {
 }
 
 impl Actor {
-    pub fn ability_mod(&self, a: Ability) -> i32 { self.abilities.mod_of(a) }
+    pub fn ability_mod(&self, a: Ability) -> i32 {
+        self.abilities.mod_of(a)
+    }
 
     pub fn save_mod(&self, a: Ability) -> i32 {
         let base = self.ability_mod(a);
-        let prof = if self.save_proficiencies.contains(&a) { self.proficiency_bonus } else { 0 };
+        let prof = if self.save_proficiencies.contains(&a) {
+            self.proficiency_bonus
+        } else {
+            0
+        };
         base + prof
     }
 
     pub fn skill_mod(&self, s: Skill) -> i32 {
         let base = self.ability_mod(s.key_ability());
-        let prof = if self.skill_proficiencies.contains(&s) { self.proficiency_bonus } else { 0 };
+        let prof = if self.skill_proficiencies.contains(&s) {
+            self.proficiency_bonus
+        } else {
+            0
+        };
         base + prof
     }
 
     pub fn ability_check(&self, dice: &mut Dice, a: Ability, mode: AdMode, dc: i32) -> CheckResult {
-        check(dice, CheckInput { dc, modifier: self.ability_mod(a), mode })
+        check(
+            dice,
+            CheckInput {
+                dc,
+                modifier: self.ability_mod(a),
+                mode,
+            },
+        )
     }
     pub fn skill_check(&self, dice: &mut Dice, s: Skill, mode: AdMode, dc: i32) -> CheckResult {
-        check(dice, CheckInput { dc, modifier: self.skill_mod(s), mode })
+        check(
+            dice,
+            CheckInput {
+                dc,
+                modifier: self.skill_mod(s),
+                mode,
+            },
+        )
     }
     pub fn saving_throw(&self, dice: &mut Dice, a: Ability, mode: AdMode, dc: i32) -> CheckResult {
-        check(dice, CheckInput { dc, modifier: self.save_mod(a), mode })
+        check(
+            dice,
+            CheckInput {
+                dc,
+                modifier: self.save_mod(a),
+                mode,
+            },
+        )
     }
 }

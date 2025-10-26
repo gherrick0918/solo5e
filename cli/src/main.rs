@@ -132,6 +132,47 @@ fn main() -> anyhow::Result<()> {
             let mode = to_mode(adv);
             demo_checks(actor, seed, mode, dc);
         }
+        Cmd::ActorDemo { seed, adv, dc } => {
+            let mode = to_mode(adv);
+            let actor = sample_fighter();
+            let mut dice = Dice::from_seed(seed);
+
+            // Ability check: STR
+            let str_mod = actor.ability_mod(Ability::Str);
+            let a = actor.ability_check(&mut dice, Ability::Str, mode, dc);
+            println!(
+                "ability STR (mod={:+}): roll={} total={} vs dc={} => {}",
+                str_mod,
+                a.roll,
+                a.total,
+                a.dc,
+                if a.passed { "SUCCESS" } else { "FAIL" }
+            );
+
+            // Skill check: Athletics
+            let ath_mod = actor.skill_mod(Skill::Athletics);
+            let s = actor.skill_check(&mut dice, Skill::Athletics, mode, dc);
+            println!(
+                "skill Athletics (mod={:+}): roll={} total={} vs dc={} => {}",
+                ath_mod,
+                s.roll,
+                s.total,
+                s.dc,
+                if s.passed { "SUCCESS" } else { "FAIL" }
+            );
+
+            // Saving throw: CON
+            let con_mod = actor.save_mod(Ability::Con);
+            let sv = actor.saving_throw(&mut dice, Ability::Con, mode, dc);
+            println!(
+                "save CON (mod={:+}): roll={} total={} vs dc={} => {}",
+                con_mod,
+                sv.roll,
+                sv.total,
+                sv.dc,
+                if sv.passed { "SUCCESS" } else { "FAIL" }
+            );
+        }
     }
     Ok(())
 }
