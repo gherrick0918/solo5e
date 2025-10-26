@@ -1,8 +1,10 @@
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
+use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum AdMode {
     Normal,
     Advantage,
@@ -74,7 +76,8 @@ pub fn ability_mod(score: i32) -> i32 {
 
 /* ---------------- abilities, skills, actor ---------------- */
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Ability {
     Str,
     Dex,
@@ -84,7 +87,8 @@ pub enum Ability {
     Cha,
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Skill {
     Athletics, // STR
     Acrobatics,
@@ -127,13 +131,19 @@ impl Skill {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AbilityScores {
+    #[serde(rename = "str")]
     pub str_: i32,
+    #[serde(rename = "dex")]
     pub dex: i32,
+    #[serde(rename = "con")]
     pub con: i32,
+    #[serde(rename = "int")]
     pub int_: i32,
+    #[serde(rename = "wis")]
     pub wis: i32,
+    #[serde(rename = "cha")]
     pub cha: i32,
 }
 
@@ -153,7 +163,7 @@ impl AbilityScores {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Actor {
     pub abilities: AbilityScores,
     pub proficiency_bonus: i32,
