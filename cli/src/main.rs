@@ -1,4 +1,5 @@
 use clap::{Parser, Subcommand, ValueEnum};
+use encoding_rs::Encoding;
 use engine::{Ability, AbilityScores, Actor, AdMode, Dice, Skill};
 use std::{collections::HashSet, fs, path::PathBuf};
 
@@ -50,11 +51,14 @@ enum Cmd {
         #[arg(long, default_value_t = 13)]
         dc: i32,
     },
-    /// Serialize the sample Fighter actor to JSON (stdout)
+    /// Serialize the sample Fighter actor to JSON (stdout or file)
     ActorDump {
         /// Pretty-print JSON
         #[arg(long, default_value_t = true)]
         pretty: bool,
+        /// Optional output path; if omitted, prints to stdout
+        #[arg(long)]
+        out: Option<PathBuf>,
     },
     /// Load an Actor from a JSON file and run the demo checks
     ActorLoad {
@@ -146,12 +150,17 @@ fn main() -> anyhow::Result<()> {
             let actor = sample_fighter();
             demo_checks(actor, seed, mode, dc);
         }
-        Cmd::ActorDump { pretty } => {
+        Cmd::ActorDump { pretty, out } => {
             let actor = sample_fighter();
-            if pretty {
-                println!("{}", serde_json::to_string_pretty(&actor)?);
+            let s = if pretty {
+                serde_json::to_string_pretty(&actor)?
             } else {
-                println!("{}", serde_json::to_string(&actor)?);
+                serde_json::to_string(&actor)?
+            };
+            if let Some(path) = out {
+                fs::write(path, s.as_bytes())?; // UTF-8, no BOM
+            } else {
+                println!("{}", s);
             }
         }
         Cmd::ActorLoad {
@@ -160,8 +169,8 @@ fn main() -> anyhow::Result<()> {
             adv,
             dc,
         } => {
-            let json = fs::read_to_string(file)?;
-            let actor: Actor = serde_json::from_str(&json)?;
+            let text = read_text_auto(&file)?;
+            let actor: Actor = serde_json::from_str(&text)?;
             let mode = to_mode(adv);
             demo_checks(actor, seed, mode, dc);
         }
@@ -207,4 +216,14 @@ fn demo_checks(actor: Actor, seed: u64, mode: AdMode, dc: i32) {
         sv.dc,
         if sv.passed { "SUCCESS" } else { "FAIL" }
     );
+}
+
+fn read_text_auto(path: &std::path::Path) -> anyhow::Result<String> {
+    let bytes = fs::read(path)?;
+    if let Some((enc, bom_len)) = Encoding::for_bom(&bytes) {
+        let (cow, _, _) = enc.decode(&bytes[bom_len..]);
+        Ok(cow.into_owned())
+    } else {
+        Ok(String::from_utf8(bytes)?)
+    }
 }
