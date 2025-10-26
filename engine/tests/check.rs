@@ -1,4 +1,4 @@
-use engine::{ability_mod, check, AdMode, CheckInput, Dice};
+use engine::{AdMode, CheckInput, Dice, ability_mod, check};
 
 #[test]
 fn ability_mod_rounds_down() {
@@ -12,6 +12,13 @@ fn ability_mod_rounds_down() {
 #[test]
 fn deterministic_check_total_consistent() {
     let mut dice = Dice::from_seed(123);
-    let res = check(&mut dice, CheckInput { dc: 13, modifier: 2, mode: AdMode::Normal });
+    let res = check(
+        &mut dice,
+        CheckInput {
+            dc: 13,
+            modifier: 2,
+            mode: AdMode::Normal,
+        },
+    );
     assert_eq!(res.passed, res.total >= res.dc);
 }

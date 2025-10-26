@@ -2,7 +2,11 @@ use clap::{Parser, Subcommand, ValueEnum};
 use engine::{AdMode, Dice};
 
 #[derive(Copy, Clone, ValueEnum)]
-enum Adv { Normal, Advantage, Disadvantage }
+enum Adv {
+    Normal,
+    Advantage,
+    Disadvantage,
+}
 
 #[derive(Subcommand)]
 enum Cmd {
@@ -61,11 +65,23 @@ fn main() {
                 println!("{}", dice.d20(mode));
             }
         }
-        Cmd::Check { seed, adv, dc, modifier } => {
+        Cmd::Check {
+            seed,
+            adv,
+            dc,
+            modifier,
+        } => {
             let mode = to_mode(adv);
             let mut dice = Dice::from_seed(seed);
             let res = engine::check(&mut dice, engine::CheckInput { dc, modifier, mode });
-            println!("roll={} mod={} total={} dc={} => {}", res.roll, modifier, res.total, res.dc, if res.passed { "SUCCESS" } else { "FAIL" });
+            println!(
+                "roll={} mod={} total={} dc={} => {}",
+                res.roll,
+                modifier,
+                res.total,
+                res.dc,
+                if res.passed { "SUCCESS" } else { "FAIL" }
+            );
         }
     }
 }

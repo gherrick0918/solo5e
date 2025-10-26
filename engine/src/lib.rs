@@ -2,21 +2,37 @@ use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum AdMode { Normal, Advantage, Disadvantage }
+pub enum AdMode {
+    Normal,
+    Advantage,
+    Disadvantage,
+}
 
-pub struct Dice { rng: ChaCha8Rng }
+pub struct Dice {
+    rng: ChaCha8Rng,
+}
 
 impl Dice {
     pub fn from_seed(seed: u64) -> Self {
-        Self { rng: ChaCha8Rng::seed_from_u64(seed) }
+        Self {
+            rng: ChaCha8Rng::seed_from_u64(seed),
+        }
     }
 
     pub fn d20(&mut self, mode: AdMode) -> u8 {
         let mut roll = || self.rng.gen_range(1..=20);
         match mode {
             AdMode::Normal => roll(),
-            AdMode::Advantage => { let a = roll(); let b = roll(); a.max(b) }
-            AdMode::Disadvantage => { let a = roll(); let b = roll(); a.min(b) }
+            AdMode::Advantage => {
+                let a = roll();
+                let b = roll();
+                a.max(b)
+            }
+            AdMode::Disadvantage => {
+                let a = roll();
+                let b = roll();
+                a.min(b)
+            }
         }
     }
 }
@@ -42,7 +58,12 @@ pub struct CheckResult {
 pub fn check(dice: &mut Dice, input: CheckInput) -> CheckResult {
     let roll = dice.d20(input.mode) as i32;
     let total = roll + input.modifier;
-    CheckResult { roll, total, dc: input.dc, passed: total >= input.dc }
+    CheckResult {
+        roll,
+        total,
+        dc: input.dc,
+        passed: total >= input.dc,
+    }
 }
 
 /// D&D ability modifier = floor((score - 10) / 2) for integer scores.
