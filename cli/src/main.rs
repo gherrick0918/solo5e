@@ -296,7 +296,8 @@ fn read_text_auto(path: &std::path::Path) -> anyhow::Result<String> {
 }
 
 fn parse_damage_dice(s: &str) -> anyhow::Result<engine::DamageDice> {
-    let parts: Vec<_> = s.to_lowercase().split('d').collect();
+    let s_lower = s.to_lowercase();
+    let parts: Vec<_> = s_lower.split('d').collect();
     if parts.len() != 2 {
         anyhow::bail!("invalid dice spec (expected XdY), got: {}", s);
     }

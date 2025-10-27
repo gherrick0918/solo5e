@@ -23,10 +23,10 @@ fn damage_roll_is_within_bounds() {
 
     let noncrit = damage(&mut dice, dd, 3, false);
     // min 2..12 then +3 => 5..15
-    assert!(noncrit >= 5 && noncrit <= 15);
+    assert!((5..=15).contains(&noncrit));
 
     let mut dice2 = Dice::from_seed(42);
     let crit = damage(&mut dice2, dd, 3, true);
     // crit doubles dice: 4..24 then +3 => 7..27
-    assert!(crit >= 7 && crit <= 27);
+    assert!((7..=27).contains(&crit));
 }
