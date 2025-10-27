@@ -1,0 +1,19 @@
+{
+  "abilities": {
+    "str": 16,
+    "dex": 14,
+    "con": 14,
+    "int": 10,
+    "wis": 12,
+    "cha": 8
+  },
+  "proficiency_bonus": 2,
+  "save_proficiencies": [
+    "str",
+    "con"
+  ],
+  "skill_proficiencies": [
+    "athletics",
+    "perception"
+  ]
+}
