@@ -93,6 +93,9 @@ enum Cmd {
         /// Override damage dice (e.g., 1d8). If omitted, uses preset.
         #[arg(long)]
         dice: Option<String>,
+        /// Optional path to a weapons JSON file
+        #[arg(long)]
+        weapons: Option<PathBuf>,
         /// Ability selection: auto | str | dex
         #[arg(long, value_enum, default_value_t = AbilityChoice::Auto)]
         ability: AbilityChoice,
@@ -212,6 +215,7 @@ fn main() -> anyhow::Result<()> {
             ac,
             weapon,
             dice,
+            weapons,
             ability,
             no_prof,
             seed,
@@ -225,12 +229,70 @@ fn main() -> anyhow::Result<()> {
                 sample_fighter()
             };
 
-            let preset = find_weapon(&weapon).unwrap_or(WEAPONS[0]); // default longsword
-            let dmg_str = dice.unwrap_or_else(|| preset.dice.to_string());
-            let dmg_spec = parse_damage_dice(&dmg_str)?;
+            // 1) try file provided by --weapons
+            let loaded: Option<Vec<engine::Weapon>> = if let Some(ref p) = weapons {
+                load_weapons_file(p).ok()
+            } else {
+                // 2) else try repo default path (handy during dev)
+                let default = std::path::Path::new("content/weapons/basic.json");
+                load_weapons_file(default).ok()
+            };
 
-            let chosen_ability = pick_ability(ability, preset);
+            // 3) look up by name in loaded list, else fall back to built-ins
+            struct ResolvedWeapon {
+                name: String,
+                dice: engine::DamageDice,
+                finesse: bool,
+                ranged: bool,
+            }
+
+            let resolved = if let Some(ref list) = loaded {
+                if let Some(w) = find_weapon_in(&weapon, list) {
+                    ResolvedWeapon {
+                        name: w.name.clone(),
+                        dice: w.dice,
+                        finesse: w.finesse,
+                        ranged: w.ranged,
+                    }
+                } else {
+                    let preset = find_weapon(&weapon).unwrap_or(WEAPONS[0]);
+                    ResolvedWeapon {
+                        name: preset.name.to_string(),
+                        dice: parse_damage_dice(preset.dice)?,
+                        finesse: preset.finesse,
+                        ranged: preset.ranged,
+                    }
+                }
+            } else {
+                let preset = find_weapon(&weapon).unwrap_or(WEAPONS[0]);
+                ResolvedWeapon {
+                    name: preset.name.to_string(),
+                    dice: parse_damage_dice(preset.dice)?,
+                    finesse: preset.finesse,
+                    ranged: preset.ranged,
+                }
+            };
+
+            // ability selection & proficiency (reuse your existing logic)
+            let chosen_ability = match ability {
+                AbilityChoice::Str => Ability::Str,
+                AbilityChoice::Dex => Ability::Dex,
+                AbilityChoice::Auto => {
+                    if resolved.ranged || resolved.finesse {
+                        Ability::Dex
+                    } else {
+                        Ability::Str
+                    }
+                }
+            };
             let proficient = !no_prof;
+
+            // damage dice (override via --dice if provided)
+            let dmg_spec = if let Some(ref s) = dice {
+                parse_damage_dice(s)?
+            } else {
+                resolved.dice
+            };
 
             let attack_bonus = actor.attack_bonus(chosen_ability, proficient);
             let damage_mod = actor.damage_mod(chosen_ability);
@@ -240,16 +302,13 @@ fn main() -> anyhow::Result<()> {
 
             let atk = engine::attack(&mut dice_rng, mode, attack_bonus, ac);
             let is_crit = atk.nat20;
-            let dmg = engine::damage(
-                &mut dice_rng,
-                preset.as_damage_dice(dmg_spec),
-                damage_mod,
-                is_crit,
-            );
+            let dmg = engine::damage(&mut dice_rng, dmg_spec, damage_mod, is_crit);
+
+            let dmg_str = dice.unwrap_or_else(|| dd_to_string(dmg_spec));
 
             println!(
                 "attack: {} [{}] using {:?}: roll={} bonus={:+} total={} vs ac={} => {}{}",
-                preset.name,
+                resolved.name,
                 dmg_str,
                 chosen_ability,
                 atk.roll,
@@ -341,6 +400,20 @@ fn parse_damage_dice(s: &str) -> anyhow::Result<engine::DamageDice> {
     Ok(engine::DamageDice::new(count, sides))
 }
 
+fn load_weapons_file(path: &std::path::Path) -> anyhow::Result<Vec<engine::Weapon>> {
+    let text = read_text_auto(path)?;
+    let v: Vec<engine::Weapon> = serde_json::from_str(&text)?;
+    Ok(v)
+}
+
+fn find_weapon_in<'a>(name: &str, list: &'a [engine::Weapon]) -> Option<&'a engine::Weapon> {
+    list.iter().find(|w| w.name.eq_ignore_ascii_case(name))
+}
+
+fn dd_to_string(dd: engine::DamageDice) -> String {
+    format!("{}d{}", dd.count, dd.sides)
+}
+
 /* ---------- weapon presets ---------- */
 
 #[derive(Copy, Clone)]
@@ -349,13 +422,6 @@ struct WeaponPreset {
     dice: &'static str, // "XdY"
     finesse: bool,
     ranged: bool,
-}
-
-impl WeaponPreset {
-    fn as_damage_dice(&self, parsed: engine::DamageDice) -> engine::DamageDice {
-        // For now, parsed is used directly. This lets the user override per-run.
-        parsed
-    }
 }
 
 const WEAPONS: &[WeaponPreset] = &[
@@ -396,18 +462,4 @@ fn find_weapon(name: &str) -> Option<WeaponPreset> {
         .iter()
         .copied()
         .find(|w| w.name.eq_ignore_ascii_case(name))
-}
-
-fn pick_ability(choice: AbilityChoice, w: WeaponPreset) -> Ability {
-    match choice {
-        AbilityChoice::Str => Ability::Str,
-        AbilityChoice::Dex => Ability::Dex,
-        AbilityChoice::Auto => {
-            if w.ranged || w.finesse {
-                Ability::Dex
-            } else {
-                Ability::Str
-            }
-        }
-    }
 }
