@@ -38,6 +38,11 @@ impl Dice {
             }
         }
     }
+
+    /// Roll a generic die: 1..=sides
+    pub fn die(&mut self, sides: u8) -> u8 {
+        self.rng.gen_range(1..=sides)
+    }
 }
 
 /* ---------------- typed check API ---------------- */
@@ -226,4 +231,85 @@ impl Actor {
             },
         )
     }
+
+    /// Attack bonus = ability mod + proficiency (if proficient)
+    pub fn attack_bonus(&self, ability: Ability, proficient: bool) -> i32 {
+        let mut b = self.ability_mod(ability);
+        if proficient {
+            b += self.proficiency_bonus;
+        }
+        b
+    }
+
+    /// Damage modifier typically the ability mod (e.g., STR for melee)
+    pub fn damage_mod(&self, ability: Ability) -> i32 {
+        self.ability_mod(ability)
+    }
+}
+
+/* ---------------- attacks & damage ---------------- */
+
+#[derive(Copy, Clone, Debug)]
+pub struct DamageDice {
+    pub count: u8,
+    pub sides: u8,
+}
+
+impl DamageDice {
+    pub fn new(count: u8, sides: u8) -> Self {
+        Self { count, sides }
+    }
+
+    pub fn roll_total(&self, dice: &mut Dice, crit: bool) -> i32 {
+        let n = if crit {
+            self.count.saturating_mul(2)
+        } else {
+            self.count
+        } as i32;
+        let mut sum = 0;
+        for _ in 0..n {
+            sum += dice.die(self.sides) as i32;
+        }
+        sum
+    }
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct AttackResult {
+    pub roll: i32,
+    pub total: i32,
+    pub ac: i32,
+    pub bonus: i32,
+    pub nat20: bool,
+    pub nat1: bool,
+    pub hit: bool,
+}
+
+/// 5e: nat20 always hits, nat1 always misses; otherwise total >= AC.
+pub fn attack(dice: &mut Dice, mode: AdMode, bonus: i32, ac: i32) -> AttackResult {
+    let r = dice.d20(mode) as i32;
+    let nat20 = r == 20;
+    let nat1 = r == 1;
+    let total = r + bonus;
+    let hit = if nat20 {
+        true
+    } else if nat1 {
+        false
+    } else {
+        total >= ac
+    };
+    AttackResult {
+        roll: r,
+        total,
+        ac,
+        bonus,
+        nat20,
+        nat1,
+        hit,
+    }
+}
+
+/// On crit, double dice (modifier once).
+pub fn damage(dice: &mut Dice, dice_spec: DamageDice, modifier: i32, crit: bool) -> i32 {
+    dice_spec.roll_total(dice, crit) + modifier
 }

@@ -75,6 +75,24 @@ enum Cmd {
         #[arg(long, default_value_t = 13)]
         dc: i32,
     },
+    /// Demo a basic weapon attack + damage
+    AttackDemo {
+        /// AC to hit
+        #[arg(long, default_value_t = 13)]
+        ac: i32,
+        /// Damage dice, e.g. 1d8
+        #[arg(long, default_value = "1d8")]
+        dice: String,
+        /// RNG seed
+        #[arg(long, default_value_t = 123)]
+        seed: u64,
+        /// Advantage mode
+        #[arg(long, value_enum, default_value_t = Adv::Normal)]
+        adv: Adv,
+        /// Optional actor JSON (if omitted, uses sample fighter)
+        #[arg(long)]
+        file: Option<PathBuf>,
+    },
 }
 
 #[derive(Parser)]
@@ -158,7 +176,7 @@ fn main() -> anyhow::Result<()> {
                 serde_json::to_string(&actor)?
             };
             if let Some(path) = out {
-                fs::write(path, s.as_bytes())?; // UTF-8, no BOM
+                fs::write(path, s.as_bytes())?;
             } else {
                 println!("{}", s);
             }
@@ -173,6 +191,55 @@ fn main() -> anyhow::Result<()> {
             let actor: Actor = serde_json::from_str(&text)?;
             let mode = to_mode(adv);
             demo_checks(actor, seed, mode, dc);
+        }
+        Cmd::AttackDemo {
+            ac,
+            dice,
+            seed,
+            adv,
+            file,
+        } => {
+            let actor = if let Some(path) = file {
+                let text = read_text_auto(&path)?;
+                serde_json::from_str::<Actor>(&text)?
+            } else {
+                sample_fighter()
+            };
+
+            // STR weapon, proficient
+            let attack_bonus = actor.attack_bonus(Ability::Str, true);
+            let damage_mod = actor.damage_mod(Ability::Str);
+
+            let mut dice_rng = Dice::from_seed(seed);
+            let mode = to_mode(adv);
+            let dmg_spec = parse_damage_dice(&dice)?;
+
+            let atk = engine::attack(&mut dice_rng, mode, attack_bonus, ac);
+            let is_crit = atk.nat20;
+            let dmg = engine::damage(&mut dice_rng, dmg_spec, damage_mod, is_crit);
+
+            println!(
+                "attack: roll={} bonus={:+} total={} vs ac={} => {}{}",
+                atk.roll,
+                atk.bonus,
+                atk.total,
+                atk.ac,
+                if atk.hit { "HIT" } else { "MISS" },
+                if atk.nat20 {
+                    " (CRIT)"
+                } else if atk.nat1 {
+                    " (NAT1)"
+                } else {
+                    ""
+                }
+            );
+            println!(
+                "damage: {} + {:+}{} => {}",
+                dice,
+                damage_mod,
+                if is_crit { " (crit doubles dice)" } else { "" },
+                dmg
+            );
         }
     }
     Ok(())
@@ -226,4 +293,18 @@ fn read_text_auto(path: &std::path::Path) -> anyhow::Result<String> {
     } else {
         Ok(String::from_utf8(bytes)?)
     }
+}
+
+fn parse_damage_dice(s: &str) -> anyhow::Result<engine::DamageDice> {
+    let s_lower = s.to_lowercase();
+    let parts: Vec<_> = s_lower.split('d').collect();
+    if parts.len() != 2 {
+        anyhow::bail!("invalid dice spec (expected XdY), got: {}", s);
+    }
+    let count: u8 = parts[0].parse()?;
+    let sides: u8 = parts[1].parse()?;
+    if count == 0 || sides < 2 {
+        anyhow::bail!("dice must be >= 1d2");
+    }
+    Ok(engine::DamageDice::new(count, sides))
 }
