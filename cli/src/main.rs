@@ -1,10 +1,14 @@
 use clap::{Parser, Subcommand, ValueEnum};
+use encoding_rs::Encoding;
 use engine::{Ability, AbilityScores, Actor, AdMode, Dice, Skill};
 use std::{collections::HashSet, fs, path::PathBuf};
-use encoding_rs::Encoding;
 
 #[derive(Copy, Clone, ValueEnum)]
-enum Adv { Normal, Advantage, Disadvantage }
+enum Adv {
+    Normal,
+    Advantage,
+    Disadvantage,
+}
 
 #[derive(Subcommand)]
 enum Cmd {
@@ -109,14 +113,26 @@ fn to_mode(a: Adv) -> AdMode {
 
 fn sample_fighter() -> Actor {
     // L1 Fighter: PB +2, STR/CON saves; Athletics & Perception proficient
-    let abilities = AbilityScores { str_: 16, dex: 14, con: 14, int_: 10, wis: 12, cha: 8 };
+    let abilities = AbilityScores {
+        str_: 16,
+        dex: 14,
+        con: 14,
+        int_: 10,
+        wis: 12,
+        cha: 8,
+    };
     let mut save = HashSet::new();
     save.insert(Ability::Str);
     save.insert(Ability::Con);
     let mut skills = HashSet::new();
     skills.insert(Skill::Athletics);
     skills.insert(Skill::Perception);
-    Actor { abilities, proficiency_bonus: 2, save_proficiencies: save, skill_proficiencies: skills }
+    Actor {
+        abilities,
+        proficiency_bonus: 2,
+        save_proficiencies: save,
+        skill_proficiencies: skills,
+    }
 }
 
 fn main() -> anyhow::Result<()> {
@@ -129,11 +145,23 @@ fn main() -> anyhow::Result<()> {
                 println!("{}", dice.d20(mode));
             }
         }
-        Cmd::Check { seed, adv, dc, modifier } => {
+        Cmd::Check {
+            seed,
+            adv,
+            dc,
+            modifier,
+        } => {
             let mode = to_mode(adv);
             let mut dice = Dice::from_seed(seed);
             let res = engine::check(&mut dice, engine::CheckInput { dc, modifier, mode });
-            println!("roll={} mod={} total={} dc={} => {}", res.roll, modifier, res.total, res.dc, if res.passed { "SUCCESS" } else { "FAIL" });
+            println!(
+                "roll={} mod={} total={} dc={} => {}",
+                res.roll,
+                modifier,
+                res.total,
+                res.dc,
+                if res.passed { "SUCCESS" } else { "FAIL" }
+            );
         }
         Cmd::ActorDemo { seed, adv, dc } => {
             let mode = to_mode(adv);
@@ -142,16 +170,35 @@ fn main() -> anyhow::Result<()> {
         }
         Cmd::ActorDump { pretty, out } => {
             let actor = sample_fighter();
-            let s = if pretty { serde_json::to_string_pretty(&actor)? } else { serde_json::to_string(&actor)? };
-            if let Some(path) = out { fs::write(path, s.as_bytes())?; } else { println!("{}", s); }
+            let s = if pretty {
+                serde_json::to_string_pretty(&actor)?
+            } else {
+                serde_json::to_string(&actor)?
+            };
+            if let Some(path) = out {
+                fs::write(path, s.as_bytes())?;
+            } else {
+                println!("{}", s);
+            }
         }
-        Cmd::ActorLoad { file, seed, adv, dc } => {
+        Cmd::ActorLoad {
+            file,
+            seed,
+            adv,
+            dc,
+        } => {
             let text = read_text_auto(&file)?;
             let actor: Actor = serde_json::from_str(&text)?;
             let mode = to_mode(adv);
             demo_checks(actor, seed, mode, dc);
         }
-        Cmd::AttackDemo { ac, dice, seed, adv, file } => {
+        Cmd::AttackDemo {
+            ac,
+            dice,
+            seed,
+            adv,
+            file,
+        } => {
             let actor = if let Some(path) = file {
                 let text = read_text_auto(&path)?;
                 serde_json::from_str::<Actor>(&text)?
@@ -171,13 +218,25 @@ fn main() -> anyhow::Result<()> {
             let is_crit = atk.nat20;
             let dmg = engine::damage(&mut dice_rng, dmg_spec, damage_mod, is_crit);
 
-            println!("attack: roll={} bonus={:+} total={} vs ac={} => {}{}",
-                atk.roll, atk.bonus, atk.total, atk.ac,
+            println!(
+                "attack: roll={} bonus={:+} total={} vs ac={} => {}{}",
+                atk.roll,
+                atk.bonus,
+                atk.total,
+                atk.ac,
                 if atk.hit { "HIT" } else { "MISS" },
-                if atk.nat20 { " (CRIT)" } else if atk.nat1 { " (NAT1)" } else { "" }
+                if atk.nat20 {
+                    " (CRIT)"
+                } else if atk.nat1 {
+                    " (NAT1)"
+                } else {
+                    ""
+                }
             );
-            println!("damage: {} + {:+}{} => {}",
-                dice, damage_mod,
+            println!(
+                "damage: {} + {:+}{} => {}",
+                dice,
+                damage_mod,
                 if is_crit { " (crit doubles dice)" } else { "" },
                 dmg
             );
@@ -192,17 +251,38 @@ fn demo_checks(actor: Actor, seed: u64, mode: AdMode, dc: i32) {
     // Ability check: STR
     let str_mod = actor.ability_mod(Ability::Str);
     let a = actor.ability_check(&mut dice, Ability::Str, mode, dc);
-    println!("ability STR (mod={:+}): roll={} total={} vs dc={} => {}", str_mod, a.roll, a.total, a.dc, if a.passed { "SUCCESS" } else { "FAIL" });
+    println!(
+        "ability STR (mod={:+}): roll={} total={} vs dc={} => {}",
+        str_mod,
+        a.roll,
+        a.total,
+        a.dc,
+        if a.passed { "SUCCESS" } else { "FAIL" }
+    );
 
     // Skill check: Athletics
     let ath_mod = actor.skill_mod(Skill::Athletics);
     let s = actor.skill_check(&mut dice, Skill::Athletics, mode, dc);
-    println!("skill Athletics (mod={:+}): roll={} total={} vs dc={} => {}", ath_mod, s.roll, s.total, s.dc, if s.passed { "SUCCESS" } else { "FAIL" });
+    println!(
+        "skill Athletics (mod={:+}): roll={} total={} vs dc={} => {}",
+        ath_mod,
+        s.roll,
+        s.total,
+        s.dc,
+        if s.passed { "SUCCESS" } else { "FAIL" }
+    );
 
     // Saving throw: CON
     let con_mod = actor.save_mod(Ability::Con);
     let sv = actor.saving_throw(&mut dice, Ability::Con, mode, dc);
-    println!("save CON (mod={:+}): roll={} total={} vs dc={} => {}", con_mod, sv.roll, sv.total, sv.dc, if sv.passed { "SUCCESS" } else { "FAIL" });
+    println!(
+        "save CON (mod={:+}): roll={} total={} vs dc={} => {}",
+        con_mod,
+        sv.roll,
+        sv.total,
+        sv.dc,
+        if sv.passed { "SUCCESS" } else { "FAIL" }
+    );
 }
 
 fn read_text_auto(path: &std::path::Path) -> anyhow::Result<String> {
