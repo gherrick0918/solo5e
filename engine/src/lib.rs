@@ -249,7 +249,7 @@ impl Actor {
 
 /* ---------------- attacks & damage ---------------- */
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, Serialize, Deserialize)]
 pub struct DamageDice {
     pub count: u8,
     pub sides: u8,
@@ -312,4 +312,17 @@ pub fn attack(dice: &mut Dice, mode: AdMode, bonus: i32, ac: i32) -> AttackResul
 /// On crit, double dice (modifier once).
 pub fn damage(dice: &mut Dice, dice_spec: DamageDice, modifier: i32, crit: bool) -> i32 {
     dice_spec.roll_total(dice, crit) + modifier
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Weapon {
+    pub name: String,
+    pub dice: DamageDice,
+    #[serde(default)]
+    pub finesse: bool,
+    #[serde(default)]
+    pub ranged: bool,
+    /// Optional versatile dice (e.g., longsword 1d10)
+    #[serde(default)]
+    pub versatile: Option<DamageDice>,
 }

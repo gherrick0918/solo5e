@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://gherrick0918.github.io/solo5e/schema/weapons.schema.json",
+  "title": "Weapons",
+  "type": "array",
+  "items": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "name":    { "type": "string", "minLength": 1 },
+      "dice":    {
+        "type": "object",
+        "properties": {
+          "count": { "type": "integer", "minimum": 1, "maximum": 20 },
+          "sides": { "type": "integer", "minimum": 2, "maximum": 100 }
+        },
+        "required": ["count", "sides"],
+        "additionalProperties": false
+      },
+      "finesse": { "type": "boolean", "default": false },
+      "ranged":  { "type": "boolean", "default": false },
+      "versatile": {
+        "type": "object",
+        "properties": {
+          "count": { "type": "integer", "minimum": 1, "maximum": 20 },
+          "sides": { "type": "integer", "minimum": 2, "maximum": 100 }
+        },
+        "required": ["count", "sides"],
+        "additionalProperties": false
+      }
+    },
+    "required": ["name", "dice"]
+  }
+}
