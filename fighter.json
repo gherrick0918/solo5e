@@ -9,8 +9,8 @@
   },
   "proficiency_bonus": 2,
   "save_proficiencies": [
-    "str",
-    "con"
+    "con",
+    "str"
   ],
   "skill_proficiencies": [
     "athletics",
