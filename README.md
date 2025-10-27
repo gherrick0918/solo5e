@@ -50,3 +50,45 @@ Example: `content/characters/sample_fighter.json`.
 ---
 
 *This project aims to implement SRD 5.1-compliant systems. Non-SRD content will be kept out of the core.*
+### Attack demo with weapon presets
+
+```bash
+# default: longsword, STR, proficient
+cargo run -p cli -- attack-demo --ac 15 --seed 999
+
+# pick a weapon preset explicitly
+cargo run -p cli -- attack-demo --weapon longsword --ac 15 --adv advantage
+
+# finesse defaults to DEX when ability=auto
+cargo run -p cli -- attack-demo --weapon shortsword --ac 14
+
+# ranged uses DEX (auto)
+cargo run -p cli -- attack-demo --weapon longbow --ac 14
+
+# force STR on a finesse weapon
+cargo run -p cli -- attack-demo --weapon dagger --ability str --ac 13
+
+# simulate non-proficiency
+cargo run -p cli -- attack-demo --weapon longbow --no-prof --ac 15
+
+# override damage dice explicitly
+cargo run -p cli -- attack-demo --weapon longsword --dice 1d10 --ac 15
+```
+
+
+---
+
+## Verify locally
+
+```bash
+cargo fmt --all
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+
+# demos
+cargo run -p cli -- attack-demo --ac 15 --seed 999
+cargo run -p cli -- attack-demo --weapon shortsword --ac 14
+cargo run -p cli -- attack-demo --weapon longbow --no-prof --ac 15
+cargo run -p cli -- attack-demo --weapon dagger --ability str --ac 13
+cargo run -p cli -- attack-demo --weapon longsword --dice 1d10 --ac 15
+```
