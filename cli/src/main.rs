@@ -10,6 +10,13 @@ enum Adv {
     Disadvantage,
 }
 
+#[derive(Copy, Clone, ValueEnum)]
+enum AbilityChoice {
+    Auto,
+    Str,
+    Dex,
+}
+
 #[derive(Subcommand)]
 enum Cmd {
     /// Roll a d20 multiple times with optional advantage/disadvantage
@@ -80,9 +87,18 @@ enum Cmd {
         /// AC to hit
         #[arg(long, default_value_t = 13)]
         ac: i32,
-        /// Damage dice, e.g. 1d8
-        #[arg(long, default_value = "1d8")]
-        dice: String,
+        /// Weapon preset (longsword, shortsword, dagger, greatsword, longbow)
+        #[arg(long, default_value = "longsword")]
+        weapon: String,
+        /// Override damage dice (e.g., 1d8). If omitted, uses preset.
+        #[arg(long)]
+        dice: Option<String>,
+        /// Ability selection: auto | str | dex
+        #[arg(long, value_enum, default_value_t = AbilityChoice::Auto)]
+        ability: AbilityChoice,
+        /// Disable proficiency bonus
+        #[arg(long, default_value_t = false)]
+        no_prof: bool,
         /// RNG seed
         #[arg(long, default_value_t = 123)]
         seed: u64,
@@ -176,7 +192,7 @@ fn main() -> anyhow::Result<()> {
                 serde_json::to_string(&actor)?
             };
             if let Some(path) = out {
-                fs::write(path, s.as_bytes())?;
+                fs::write(path, s.as_bytes())?; // UTF-8, no BOM
             } else {
                 println!("{}", s);
             }
@@ -194,7 +210,10 @@ fn main() -> anyhow::Result<()> {
         }
         Cmd::AttackDemo {
             ac,
+            weapon,
             dice,
+            ability,
+            no_prof,
             seed,
             adv,
             file,
@@ -206,20 +225,33 @@ fn main() -> anyhow::Result<()> {
                 sample_fighter()
             };
 
-            // STR weapon, proficient
-            let attack_bonus = actor.attack_bonus(Ability::Str, true);
-            let damage_mod = actor.damage_mod(Ability::Str);
+            let preset = find_weapon(&weapon).unwrap_or(WEAPONS[0]); // default longsword
+            let dmg_str = dice.unwrap_or_else(|| preset.dice.to_string());
+            let dmg_spec = parse_damage_dice(&dmg_str)?;
+
+            let chosen_ability = pick_ability(ability, preset);
+            let proficient = !no_prof;
+
+            let attack_bonus = actor.attack_bonus(chosen_ability, proficient);
+            let damage_mod = actor.damage_mod(chosen_ability);
 
             let mut dice_rng = Dice::from_seed(seed);
             let mode = to_mode(adv);
-            let dmg_spec = parse_damage_dice(&dice)?;
 
             let atk = engine::attack(&mut dice_rng, mode, attack_bonus, ac);
             let is_crit = atk.nat20;
-            let dmg = engine::damage(&mut dice_rng, dmg_spec, damage_mod, is_crit);
+            let dmg = engine::damage(
+                &mut dice_rng,
+                preset.as_damage_dice(dmg_spec),
+                damage_mod,
+                is_crit,
+            );
 
             println!(
-                "attack: roll={} bonus={:+} total={} vs ac={} => {}{}",
+                "attack: {} [{}] using {:?}: roll={} bonus={:+} total={} vs ac={} => {}{}",
+                preset.name,
+                dmg_str,
+                chosen_ability,
                 atk.roll,
                 atk.bonus,
                 atk.total,
@@ -235,7 +267,7 @@ fn main() -> anyhow::Result<()> {
             );
             println!(
                 "damage: {} + {:+}{} => {}",
-                dice,
+                dmg_str,
                 damage_mod,
                 if is_crit { " (crit doubles dice)" } else { "" },
                 dmg
@@ -296,8 +328,8 @@ fn read_text_auto(path: &std::path::Path) -> anyhow::Result<String> {
 }
 
 fn parse_damage_dice(s: &str) -> anyhow::Result<engine::DamageDice> {
-    let s_lower = s.to_lowercase();
-    let parts: Vec<_> = s_lower.split('d').collect();
+    let lowered = s.to_lowercase();
+    let parts: Vec<_> = lowered.split('d').collect();
     if parts.len() != 2 {
         anyhow::bail!("invalid dice spec (expected XdY), got: {}", s);
     }
@@ -307,4 +339,75 @@ fn parse_damage_dice(s: &str) -> anyhow::Result<engine::DamageDice> {
         anyhow::bail!("dice must be >= 1d2");
     }
     Ok(engine::DamageDice::new(count, sides))
+}
+
+/* ---------- weapon presets ---------- */
+
+#[derive(Copy, Clone)]
+struct WeaponPreset {
+    name: &'static str,
+    dice: &'static str, // "XdY"
+    finesse: bool,
+    ranged: bool,
+}
+
+impl WeaponPreset {
+    fn as_damage_dice(&self, parsed: engine::DamageDice) -> engine::DamageDice {
+        // For now, parsed is used directly. This lets the user override per-run.
+        parsed
+    }
+}
+
+const WEAPONS: &[WeaponPreset] = &[
+    WeaponPreset {
+        name: "longsword",
+        dice: "1d8",
+        finesse: false,
+        ranged: false,
+    },
+    WeaponPreset {
+        name: "shortsword",
+        dice: "1d6",
+        finesse: true,
+        ranged: false,
+    },
+    WeaponPreset {
+        name: "dagger",
+        dice: "1d4",
+        finesse: true,
+        ranged: false,
+    },
+    WeaponPreset {
+        name: "greatsword",
+        dice: "2d6",
+        finesse: false,
+        ranged: false,
+    },
+    WeaponPreset {
+        name: "longbow",
+        dice: "1d8",
+        finesse: false,
+        ranged: true,
+    },
+];
+
+fn find_weapon(name: &str) -> Option<WeaponPreset> {
+    WEAPONS
+        .iter()
+        .copied()
+        .find(|w| w.name.eq_ignore_ascii_case(name))
+}
+
+fn pick_ability(choice: AbilityChoice, w: WeaponPreset) -> Ability {
+    match choice {
+        AbilityChoice::Str => Ability::Str,
+        AbilityChoice::Dex => Ability::Dex,
+        AbilityChoice::Auto => {
+            if w.ranged || w.finesse {
+                Ability::Dex
+            } else {
+                Ability::Str
+            }
+        }
+    }
 }
