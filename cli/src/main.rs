@@ -1,6 +1,7 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use encoding_rs::Encoding;
 use engine::{Ability, AbilityScores, Actor, AdMode, Dice, Skill};
+use serde::Deserialize;
 use std::{collections::HashSet, fs, path::PathBuf};
 
 #[derive(Copy, Clone, ValueEnum)]
@@ -15,6 +16,13 @@ enum AbilityChoice {
     Auto,
     Str,
     Dex,
+}
+
+#[derive(Deserialize, Clone)]
+struct Target {
+    name: String,
+    ac: i32,
+    hp: i32,
 }
 
 #[derive(Subcommand)]
@@ -108,6 +116,48 @@ enum Cmd {
         /// Advantage mode
         #[arg(long, value_enum, default_value_t = Adv::Normal)]
         adv: Adv,
+        /// Optional actor JSON (if omitted, uses sample fighter)
+        #[arg(long)]
+        file: Option<PathBuf>,
+    },
+    /// Attack a target loaded from JSON; supports one or multiple rounds
+    AttackVs {
+        /// Path to target JSON (name, ac, hp)
+        #[arg(long)]
+        target: PathBuf,
+
+        /// Rounds to run (default 1). Stops early if target drops to 0 HP.
+        #[arg(long, default_value_t = 1)]
+        rounds: u32,
+
+        /// Weapon preset (or use --dice to override)
+        #[arg(long, default_value = "longsword")]
+        weapon: String,
+
+        /// Override damage dice (XdY). If omitted, uses weapon preset/file.
+        #[arg(long)]
+        dice: Option<String>,
+
+        /// Ability: auto | str | dex
+        #[arg(long, value_enum, default_value_t = AbilityChoice::Auto)]
+        ability: AbilityChoice,
+
+        /// Disable proficiency bonus
+        #[arg(long, default_value_t = false)]
+        no_prof: bool,
+
+        /// Optional weapons JSON file (falls back to content/weapons/basic.json then built-ins)
+        #[arg(long)]
+        weapons: Option<PathBuf>,
+
+        /// RNG seed
+        #[arg(long, default_value_t = 123)]
+        seed: u64,
+
+        /// Advantage mode
+        #[arg(long, value_enum, default_value_t = Adv::Normal)]
+        adv: Adv,
+
         /// Optional actor JSON (if omitted, uses sample fighter)
         #[arg(long)]
         file: Option<PathBuf>,
@@ -332,6 +382,139 @@ fn main() -> anyhow::Result<()> {
                 dmg
             );
         }
+        Cmd::AttackVs {
+            target,
+            rounds,
+            weapon,
+            dice,
+            ability,
+            no_prof,
+            weapons,
+            seed,
+            adv,
+            file,
+        } => {
+            let actor = if let Some(path) = file {
+                let text = read_text_auto(&path)?;
+                serde_json::from_str::<Actor>(&text)?
+            } else {
+                sample_fighter()
+            };
+
+            // Load target
+            let mut tgt = read_target_auto(&target)?;
+
+            // Load weapons file if present (or try default path), else fall back to built-ins
+            let loaded: Option<Vec<engine::Weapon>> = if let Some(ref p) = weapons {
+                load_weapons_file(p).ok()
+            } else {
+                let default = std::path::Path::new("content/weapons/basic.json");
+                load_weapons_file(default).ok()
+            };
+
+            struct ResolvedWeapon {
+                name: String,
+                dice: engine::DamageDice,
+                finesse: bool,
+                ranged: bool,
+            }
+            let resolved = if let Some(ref list) = loaded {
+                if let Some(w) = find_weapon_in(&weapon, list) {
+                    ResolvedWeapon {
+                        name: w.name.clone(),
+                        dice: w.dice,
+                        finesse: w.finesse,
+                        ranged: w.ranged,
+                    }
+                } else {
+                    let p = find_weapon(&weapon).unwrap_or(WEAPONS[0]);
+                    ResolvedWeapon {
+                        name: p.name.to_string(),
+                        dice: parse_damage_dice(p.dice)?,
+                        finesse: p.finesse,
+                        ranged: p.ranged,
+                    }
+                }
+            } else {
+                let p = find_weapon(&weapon).unwrap_or(WEAPONS[0]);
+                ResolvedWeapon {
+                    name: p.name.to_string(),
+                    dice: parse_damage_dice(p.dice)?,
+                    finesse: p.finesse,
+                    ranged: p.ranged,
+                }
+            };
+
+            let chosen_ability = match ability {
+                AbilityChoice::Str => Ability::Str,
+                AbilityChoice::Dex => Ability::Dex,
+                AbilityChoice::Auto => {
+                    if resolved.ranged || resolved.finesse {
+                        Ability::Dex
+                    } else {
+                        Ability::Str
+                    }
+                }
+            };
+            let proficient = !no_prof;
+
+            let dmg_spec = if let Some(ref s) = dice {
+                parse_damage_dice(s)?
+            } else {
+                resolved.dice
+            };
+            let attack_bonus = actor.attack_bonus(chosen_ability, proficient);
+            let damage_mod = actor.damage_mod(chosen_ability);
+
+            let mut dice_rng = Dice::from_seed(seed);
+            let mode = to_mode(adv);
+
+            println!("target: {} (AC {}, HP {})", tgt.name, tgt.ac, tgt.hp);
+            println!(
+                "weapon: {} [{}] using {:?}{}",
+                resolved.name,
+                dd_to_string(dmg_spec),
+                chosen_ability,
+                if proficient {
+                    " (proficient)"
+                } else {
+                    " (no prof)"
+                }
+            );
+
+            for r in 1..=rounds {
+                if tgt.hp <= 0 {
+                    break;
+                }
+                let atk = engine::attack(&mut dice_rng, mode, attack_bonus, tgt.ac);
+                let is_crit = atk.nat20;
+                if atk.hit {
+                    let dmg = engine::damage(&mut dice_rng, dmg_spec, damage_mod, is_crit);
+                    tgt.hp = (tgt.hp - dmg).max(0);
+                    println!(
+                        "round {}: HIT{} (roll={} total={}) dmg={} -> {} HP left",
+                        r,
+                        if atk.nat20 { " CRIT" } else { "" },
+                        atk.roll,
+                        atk.total,
+                        dmg,
+                        tgt.hp
+                    );
+                } else {
+                    println!(
+                        "round {}: MISS{} (roll={} total={}) -> {} HP left",
+                        r,
+                        if atk.nat1 { " NAT1" } else { "" },
+                        atk.roll,
+                        atk.total,
+                        tgt.hp
+                    );
+                }
+            }
+            if tgt.hp <= 0 {
+                println!("{} is down.", tgt.name);
+            }
+        }
     }
     Ok(())
 }
@@ -384,6 +567,11 @@ fn read_text_auto(path: &std::path::Path) -> anyhow::Result<String> {
     } else {
         Ok(String::from_utf8(bytes)?)
     }
+}
+
+fn read_target_auto(path: &std::path::Path) -> anyhow::Result<Target> {
+    let text = read_text_auto(path)?;
+    Ok(serde_json::from_str(&text)?)
 }
 
 fn parse_damage_dice(s: &str) -> anyhow::Result<engine::DamageDice> {
