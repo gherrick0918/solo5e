@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://gherrick0918.github.io/solo5e/schema/target.schema.json",
+  "title": "Target",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "name": { "type": "string", "minLength": 1 },
+    "ac":   { "type": "integer", "minimum": 1, "maximum": 30 },
+    "hp":   { "type": "integer", "minimum": 1, "maximum": 1000 }
+  },
+  "required": ["name", "ac", "hp"]
+}
+

@@ -75,6 +75,16 @@ cargo run -p cli -- attack-demo --weapon longbow --no-prof --ac 15
 cargo run -p cli -- attack-demo --weapon longsword --dice 1d10 --ac 15
 ```
 
+### Attack a target from JSON
+
+```bash
+# Single round vs goblin
+cargo run -p cli -- attack-vs --target content/targets/goblin.json --weapon longsword
+
+# Multi-round (stop early if target hits 0 HP)
+cargo run -p cli -- attack-vs --target content/targets/goblin.json --rounds 5 --weapon longbow --weapons content/weapons/basic.json --adv advantage --seed 999
+```
+
 
 ---
 

@@ -139,6 +139,7 @@ dependencies = [
  "clap",
  "encoding_rs",
  "engine",
+ "serde",
  "serde_json",
 ]
 
