@@ -7,7 +7,10 @@
   "properties": {
     "name": { "type": "string", "minLength": 1 },
     "ac":   { "type": "integer", "minimum": 1, "maximum": 30 },
-    "hp":   { "type": "integer", "minimum": 1, "maximum": 1000 }
+    "hp":   { "type": "integer", "minimum": 1, "maximum": 1000 },
+    "resistances":   { "type": "array", "items": { "type": "string" } },
+    "vulnerabilities": { "type": "array", "items": { "type": "string" } },
+    "immunities":    { "type": "array", "items": { "type": "string" } }
   },
   "required": ["name", "ac", "hp"]
 }

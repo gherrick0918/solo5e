@@ -27,6 +27,24 @@
         },
         "required": ["count", "sides"],
         "additionalProperties": false
+      },
+      "damage_type": {
+        "type": "string",
+        "enum": [
+          "bludgeoning",
+          "piercing",
+          "slashing",
+          "fire",
+          "cold",
+          "lightning",
+          "acid",
+          "poison",
+          "psychic",
+          "radiant",
+          "necrotic",
+          "thunder",
+          "force"
+        ]
       }
     },
     "required": ["name", "dice"]
