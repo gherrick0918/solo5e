@@ -110,6 +110,9 @@ enum Cmd {
         /// Disable proficiency bonus
         #[arg(long, default_value_t = false)]
         no_prof: bool,
+        /// Use versatile damage (two-handed) if available
+        #[arg(long, default_value_t = false)]
+        two_handed: bool,
         /// RNG seed
         #[arg(long, default_value_t = 123)]
         seed: u64,
@@ -149,6 +152,10 @@ enum Cmd {
         /// Optional weapons JSON file (falls back to content/weapons/basic.json then built-ins)
         #[arg(long)]
         weapons: Option<PathBuf>,
+
+        /// Use versatile damage (two-handed) if available
+        #[arg(long, default_value_t = false)]
+        two_handed: bool,
 
         /// RNG seed
         #[arg(long, default_value_t = 123)]
@@ -268,6 +275,7 @@ fn main() -> anyhow::Result<()> {
             weapons,
             ability,
             no_prof,
+            two_handed,
             seed,
             adv,
             file,
@@ -294,6 +302,7 @@ fn main() -> anyhow::Result<()> {
                 dice: engine::DamageDice,
                 finesse: bool,
                 ranged: bool,
+                versatile: Option<engine::DamageDice>,
             }
 
             let resolved = if let Some(ref list) = loaded {
@@ -303,6 +312,7 @@ fn main() -> anyhow::Result<()> {
                         dice: w.dice,
                         finesse: w.finesse,
                         ranged: w.ranged,
+                        versatile: w.versatile,
                     }
                 } else {
                     let preset = find_weapon(&weapon).unwrap_or(WEAPONS[0]);
@@ -311,6 +321,10 @@ fn main() -> anyhow::Result<()> {
                         dice: parse_damage_dice(preset.dice)?,
                         finesse: preset.finesse,
                         ranged: preset.ranged,
+                        versatile: match preset.versatile {
+                            Some(s) => Some(parse_damage_dice(s)?),
+                            None => None,
+                        },
                     }
                 }
             } else {
@@ -320,6 +334,10 @@ fn main() -> anyhow::Result<()> {
                     dice: parse_damage_dice(preset.dice)?,
                     finesse: preset.finesse,
                     ranged: preset.ranged,
+                    versatile: match preset.versatile {
+                        Some(s) => Some(parse_damage_dice(s)?),
+                        None => None,
+                    },
                 }
             };
 
@@ -340,6 +358,8 @@ fn main() -> anyhow::Result<()> {
             // damage dice (override via --dice if provided)
             let dmg_spec = if let Some(ref s) = dice {
                 parse_damage_dice(s)?
+            } else if two_handed {
+                resolved.versatile.unwrap_or(resolved.dice)
             } else {
                 resolved.dice
             };
@@ -390,6 +410,7 @@ fn main() -> anyhow::Result<()> {
             ability,
             no_prof,
             weapons,
+            two_handed,
             seed,
             adv,
             file,
@@ -417,6 +438,7 @@ fn main() -> anyhow::Result<()> {
                 dice: engine::DamageDice,
                 finesse: bool,
                 ranged: bool,
+                versatile: Option<engine::DamageDice>,
             }
             let resolved = if let Some(ref list) = loaded {
                 if let Some(w) = find_weapon_in(&weapon, list) {
@@ -425,6 +447,7 @@ fn main() -> anyhow::Result<()> {
                         dice: w.dice,
                         finesse: w.finesse,
                         ranged: w.ranged,
+                        versatile: w.versatile,
                     }
                 } else {
                     let p = find_weapon(&weapon).unwrap_or(WEAPONS[0]);
@@ -433,6 +456,10 @@ fn main() -> anyhow::Result<()> {
                         dice: parse_damage_dice(p.dice)?,
                         finesse: p.finesse,
                         ranged: p.ranged,
+                        versatile: match p.versatile {
+                            Some(s) => Some(parse_damage_dice(s)?),
+                            None => None,
+                        },
                     }
                 }
             } else {
@@ -442,6 +469,10 @@ fn main() -> anyhow::Result<()> {
                     dice: parse_damage_dice(p.dice)?,
                     finesse: p.finesse,
                     ranged: p.ranged,
+                    versatile: match p.versatile {
+                        Some(s) => Some(parse_damage_dice(s)?),
+                        None => None,
+                    },
                 }
             };
 
@@ -460,6 +491,8 @@ fn main() -> anyhow::Result<()> {
 
             let dmg_spec = if let Some(ref s) = dice {
                 parse_damage_dice(s)?
+            } else if two_handed {
+                resolved.versatile.unwrap_or(resolved.dice)
             } else {
                 resolved.dice
             };
@@ -610,6 +643,7 @@ struct WeaponPreset {
     dice: &'static str, // "XdY"
     finesse: bool,
     ranged: bool,
+    versatile: Option<&'static str>, // two-handed dice like "1d10"
 }
 
 const WEAPONS: &[WeaponPreset] = &[
@@ -618,30 +652,35 @@ const WEAPONS: &[WeaponPreset] = &[
         dice: "1d8",
         finesse: false,
         ranged: false,
+        versatile: Some("1d10"),
     },
     WeaponPreset {
         name: "shortsword",
         dice: "1d6",
         finesse: true,
         ranged: false,
+        versatile: None,
     },
     WeaponPreset {
         name: "dagger",
         dice: "1d4",
         finesse: true,
         ranged: false,
+        versatile: None,
     },
     WeaponPreset {
         name: "greatsword",
         dice: "2d6",
         finesse: false,
         ranged: false,
+        versatile: None,
     },
     WeaponPreset {
         name: "longbow",
         dice: "1d8",
         finesse: false,
         ranged: true,
+        versatile: None,
     },
 ];
 
