@@ -11,6 +11,24 @@ pub enum AdMode {
     Disadvantage,
 }
 
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DamageType {
+    Bludgeoning,
+    Piercing,
+    Slashing,
+    Fire,
+    Cold,
+    Lightning,
+    Acid,
+    Poison,
+    Psychic,
+    Radiant,
+    Necrotic,
+    Thunder,
+    Force,
+}
+
 pub struct Dice {
     rng: ChaCha8Rng,
 }
@@ -314,6 +332,30 @@ pub fn damage(dice: &mut Dice, dice_spec: DamageDice, modifier: i32, crit: bool)
     dice_spec.roll_total(dice, crit) + modifier
 }
 
+pub fn adjust_damage_by_type(
+    base: i32,
+    dtype: DamageType,
+    resist: &HashSet<DamageType>,
+    vuln: &HashSet<DamageType>,
+    immune: &HashSet<DamageType>,
+) -> i32 {
+    if immune.contains(&dtype) {
+        return 0;
+    }
+    let has_res = resist.contains(&dtype);
+    let has_vuln = vuln.contains(&dtype);
+    if has_res && has_vuln {
+        return base;
+    }
+    if has_res {
+        (base as f32 / 2.0).floor() as i32
+    } else if has_vuln {
+        base * 2
+    } else {
+        base
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Weapon {
     pub name: String,
@@ -325,4 +367,6 @@ pub struct Weapon {
     /// Optional versatile dice (e.g., longsword 1d10)
     #[serde(default)]
     pub versatile: Option<DamageDice>,
+    #[serde(default)]
+    pub damage_type: Option<DamageType>,
 }

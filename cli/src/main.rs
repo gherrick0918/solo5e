@@ -18,11 +18,34 @@ enum AbilityChoice {
     Dex,
 }
 
+#[derive(Copy, Clone, ValueEnum)]
+enum DType {
+    Bludgeoning,
+    Piercing,
+    Slashing,
+    Fire,
+    Cold,
+    Lightning,
+    Acid,
+    Poison,
+    Psychic,
+    Radiant,
+    Necrotic,
+    Thunder,
+    Force,
+}
+
 #[derive(Deserialize, Clone)]
 struct Target {
     name: String,
     ac: i32,
     hp: i32,
+    #[serde(default)]
+    resistances: Vec<String>,
+    #[serde(default)]
+    vulnerabilities: Vec<String>,
+    #[serde(default)]
+    immunities: Vec<String>,
 }
 
 #[derive(Subcommand)]
@@ -101,6 +124,9 @@ enum Cmd {
         /// Override damage dice (e.g., 1d8). If omitted, uses preset.
         #[arg(long)]
         dice: Option<String>,
+        /// Override damage type (else from weapon/file or sensible preset)
+        #[arg(long)]
+        dtype: Option<DType>,
         /// Optional path to a weapons JSON file
         #[arg(long)]
         weapons: Option<PathBuf>,
@@ -140,6 +166,9 @@ enum Cmd {
         /// Override damage dice (XdY). If omitted, uses weapon preset/file.
         #[arg(long)]
         dice: Option<String>,
+        /// Override damage type (else from weapon/file or sensible preset)
+        #[arg(long)]
+        dtype: Option<DType>,
 
         /// Ability: auto | str | dex
         #[arg(long, value_enum, default_value_t = AbilityChoice::Auto)]
@@ -272,6 +301,7 @@ fn main() -> anyhow::Result<()> {
             ac,
             weapon,
             dice,
+            dtype,
             weapons,
             ability,
             no_prof,
@@ -303,6 +333,7 @@ fn main() -> anyhow::Result<()> {
                 finesse: bool,
                 ranged: bool,
                 versatile: Option<engine::DamageDice>,
+                damage_type: Option<engine::DamageType>,
             }
 
             let resolved = if let Some(ref list) = loaded {
@@ -313,6 +344,7 @@ fn main() -> anyhow::Result<()> {
                         finesse: w.finesse,
                         ranged: w.ranged,
                         versatile: w.versatile,
+                        damage_type: w.damage_type,
                     }
                 } else {
                     let preset = find_weapon(&weapon).unwrap_or(WEAPONS[0]);
@@ -325,6 +357,7 @@ fn main() -> anyhow::Result<()> {
                             Some(s) => Some(parse_damage_dice(s)?),
                             None => None,
                         },
+                        damage_type: preset_damage_type(preset.name),
                     }
                 }
             } else {
@@ -338,8 +371,16 @@ fn main() -> anyhow::Result<()> {
                         Some(s) => Some(parse_damage_dice(s)?),
                         None => None,
                     },
+                    damage_type: preset_damage_type(preset.name),
                 }
             };
+
+            let dtype = if let Some(dt) = dtype {
+                Some(to_engine_dtype(dt))
+            } else {
+                resolved.damage_type
+            };
+            let dtype = dtype.unwrap_or(engine::DamageType::Slashing);
 
             // ability selection & proficiency (reuse your existing logic)
             let chosen_ability = match ability {
@@ -395,11 +436,12 @@ fn main() -> anyhow::Result<()> {
                 }
             );
             println!(
-                "damage: {} + {:+}{} => {}",
+                "damage: {} + {:+}{} => {} [{:?}]",
                 dmg_str,
                 damage_mod,
                 if is_crit { " (crit doubles dice)" } else { "" },
-                dmg
+                dmg,
+                dtype
             );
         }
         Cmd::AttackVs {
@@ -407,6 +449,7 @@ fn main() -> anyhow::Result<()> {
             rounds,
             weapon,
             dice,
+            dtype,
             ability,
             no_prof,
             weapons,
@@ -424,6 +467,21 @@ fn main() -> anyhow::Result<()> {
 
             // Load target
             let mut tgt = read_target_auto(&target)?;
+            let resist: HashSet<_> = tgt
+                .resistances
+                .iter()
+                .filter_map(|s| parse_dtype_str(s))
+                .collect();
+            let vuln: HashSet<_> = tgt
+                .vulnerabilities
+                .iter()
+                .filter_map(|s| parse_dtype_str(s))
+                .collect();
+            let immune: HashSet<_> = tgt
+                .immunities
+                .iter()
+                .filter_map(|s| parse_dtype_str(s))
+                .collect();
 
             // Load weapons file if present (or try default path), else fall back to built-ins
             let loaded: Option<Vec<engine::Weapon>> = if let Some(ref p) = weapons {
@@ -439,6 +497,7 @@ fn main() -> anyhow::Result<()> {
                 finesse: bool,
                 ranged: bool,
                 versatile: Option<engine::DamageDice>,
+                damage_type: Option<engine::DamageType>,
             }
             let resolved = if let Some(ref list) = loaded {
                 if let Some(w) = find_weapon_in(&weapon, list) {
@@ -448,6 +507,7 @@ fn main() -> anyhow::Result<()> {
                         finesse: w.finesse,
                         ranged: w.ranged,
                         versatile: w.versatile,
+                        damage_type: w.damage_type,
                     }
                 } else {
                     let p = find_weapon(&weapon).unwrap_or(WEAPONS[0]);
@@ -460,6 +520,7 @@ fn main() -> anyhow::Result<()> {
                             Some(s) => Some(parse_damage_dice(s)?),
                             None => None,
                         },
+                        damage_type: preset_damage_type(p.name),
                     }
                 }
             } else {
@@ -473,8 +534,16 @@ fn main() -> anyhow::Result<()> {
                         Some(s) => Some(parse_damage_dice(s)?),
                         None => None,
                     },
+                    damage_type: preset_damage_type(p.name),
                 }
             };
+
+            let dtype = if let Some(dt) = dtype {
+                Some(to_engine_dtype(dt))
+            } else {
+                resolved.damage_type
+            };
+            let dtype = dtype.unwrap_or(engine::DamageType::Slashing);
 
             let chosen_ability = match ability {
                 AbilityChoice::Str => Ability::Str,
@@ -522,15 +591,17 @@ fn main() -> anyhow::Result<()> {
                 let atk = engine::attack(&mut dice_rng, mode, attack_bonus, tgt.ac);
                 let is_crit = atk.nat20;
                 if atk.hit {
-                    let dmg = engine::damage(&mut dice_rng, dmg_spec, damage_mod, is_crit);
+                    let raw = engine::damage(&mut dice_rng, dmg_spec, damage_mod, is_crit);
+                    let dmg = engine::adjust_damage_by_type(raw, dtype, &resist, &vuln, &immune);
                     tgt.hp = (tgt.hp - dmg).max(0);
                     println!(
-                        "round {}: HIT{} (roll={} total={}) dmg={} -> {} HP left",
+                        "round {}: HIT{} (roll={} total={}) dmg={} [{:?}] -> {} HP left",
                         r,
                         if atk.nat20 { " CRIT" } else { "" },
                         atk.roll,
                         atk.total,
                         dmg,
+                        dtype,
                         tgt.hp
                     );
                 } else {
@@ -633,6 +704,53 @@ fn find_weapon_in<'a>(name: &str, list: &'a [engine::Weapon]) -> Option<&'a engi
 
 fn dd_to_string(dd: engine::DamageDice) -> String {
     format!("{}d{}", dd.count, dd.sides)
+}
+
+fn to_engine_dtype(dt: DType) -> engine::DamageType {
+    use engine::DamageType as E;
+    match dt {
+        DType::Bludgeoning => E::Bludgeoning,
+        DType::Piercing => E::Piercing,
+        DType::Slashing => E::Slashing,
+        DType::Fire => E::Fire,
+        DType::Cold => E::Cold,
+        DType::Lightning => E::Lightning,
+        DType::Acid => E::Acid,
+        DType::Poison => E::Poison,
+        DType::Psychic => E::Psychic,
+        DType::Radiant => E::Radiant,
+        DType::Necrotic => E::Necrotic,
+        DType::Thunder => E::Thunder,
+        DType::Force => E::Force,
+    }
+}
+
+fn parse_dtype_str(s: &str) -> Option<engine::DamageType> {
+    use engine::DamageType::*;
+    match &*s.to_lowercase() {
+        "bludgeoning" => Some(Bludgeoning),
+        "piercing" => Some(Piercing),
+        "slashing" => Some(Slashing),
+        "fire" => Some(Fire),
+        "cold" => Some(Cold),
+        "lightning" => Some(Lightning),
+        "acid" => Some(Acid),
+        "poison" => Some(Poison),
+        "psychic" => Some(Psychic),
+        "radiant" => Some(Radiant),
+        "necrotic" => Some(Necrotic),
+        "thunder" => Some(Thunder),
+        "force" => Some(Force),
+        _ => None,
+    }
+}
+
+fn preset_damage_type(name: &str) -> Option<engine::DamageType> {
+    match name.to_lowercase().as_str() {
+        "longsword" | "greatsword" => Some(engine::DamageType::Slashing),
+        "shortsword" | "dagger" | "longbow" => Some(engine::DamageType::Piercing),
+        _ => None,
+    }
 }
 
 /* ---------- weapon presets ---------- */

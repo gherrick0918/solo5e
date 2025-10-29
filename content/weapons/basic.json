@@ -1,7 +1,38 @@
 [
-  { "name": "longsword",  "dice": { "count": 1, "sides": 8  }, "finesse": false, "ranged": false, "versatile": { "count": 1, "sides": 10 } },
-  { "name": "shortsword", "dice": { "count": 1, "sides": 6  }, "finesse": true,  "ranged": false },
-  { "name": "dagger",     "dice": { "count": 1, "sides": 4  }, "finesse": true,  "ranged": false },
-  { "name": "greatsword", "dice": { "count": 2, "sides": 6  }, "finesse": false, "ranged": false },
-  { "name": "longbow",    "dice": { "count": 1, "sides": 8  }, "finesse": false, "ranged": true  }
+  {
+    "name": "longsword",
+    "dice": { "count": 1, "sides": 8 },
+    "finesse": false,
+    "ranged": false,
+    "versatile": { "count": 1, "sides": 10 },
+    "damage_type": "slashing"
+  },
+  {
+    "name": "shortsword",
+    "dice": { "count": 1, "sides": 6 },
+    "finesse": true,
+    "ranged": false,
+    "damage_type": "piercing"
+  },
+  {
+    "name": "dagger",
+    "dice": { "count": 1, "sides": 4 },
+    "finesse": true,
+    "ranged": false,
+    "damage_type": "piercing"
+  },
+  {
+    "name": "greatsword",
+    "dice": { "count": 2, "sides": 6 },
+    "finesse": false,
+    "ranged": false,
+    "damage_type": "slashing"
+  },
+  {
+    "name": "longbow",
+    "dice": { "count": 1, "sides": 8 },
+    "finesse": false,
+    "ranged": true,
+    "damage_type": "piercing"
+  }
 ]
