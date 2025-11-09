@@ -62,6 +62,36 @@ struct Target {
     immunities: Vec<String>,
 }
 
+#[derive(Deserialize, Clone)]
+struct EncounterEnemy {
+    name: String,
+    ac: i32,
+    hp: i32,
+    #[serde(default)]
+    dex_mod: i32,
+    #[serde(default)]
+    attacks: Vec<TargetAttack>,
+    #[serde(default)]
+    resistances: Vec<String>,
+    #[serde(default)]
+    vulnerabilities: Vec<String>,
+    #[serde(default)]
+    immunities: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct Encounter {
+    #[serde(default)]
+    name: String,
+    #[serde(default = "default_focus")]
+    focus: String,
+    enemies: Vec<EncounterEnemy>,
+}
+
+fn default_focus() -> String {
+    "first".to_string()
+}
+
 #[derive(Subcommand)]
 enum Cmd {
     /// Roll a d20 multiple times with optional advantage/disadvantage
@@ -267,6 +297,52 @@ enum Cmd {
         adv: Adv,
 
         /// Optional actor JSON (else sample fighter)
+        #[arg(long)]
+        file: Option<PathBuf>,
+    },
+    /// Run a full multi-enemy encounter (initiative, turns, until one side drops)
+    Encounter {
+        /// Path to encounter JSON
+        #[arg(long)]
+        encounter: PathBuf,
+
+        /// Actor AC/HP (until armor/level are modeled)
+        #[arg(long, default_value_t = 16)]
+        actor_ac: i32,
+        #[arg(long, default_value_t = 12)]
+        actor_hp: i32,
+
+        /// Rounds safety cap
+        #[arg(long, default_value_t = 50)]
+        max_rounds: u32,
+
+        /// Focus strategy for actor: first | lowest | random
+        #[arg(long, default_value = "first")]
+        focus: String,
+
+        /// Weapon + flags (same as duel)
+        #[arg(long, default_value = "longsword")]
+        weapon: String,
+        #[arg(long)]
+        dice: Option<String>,
+        #[arg(long, value_enum, default_value_t = AbilityChoice::Auto)]
+        ability: AbilityChoice,
+        #[arg(long, default_value_t = false)]
+        no_prof: bool,
+        #[arg(long, default_value_t = false)]
+        two_handed: bool,
+        #[arg(long)]
+        weapons: Option<PathBuf>,
+        #[arg(long)]
+        dtype: Option<DType>,
+
+        /// Seed & advantage (actor only)
+        #[arg(long, default_value_t = 4242)]
+        seed: u64,
+        #[arg(long, value_enum, default_value_t = Adv::Normal)]
+        adv: Adv,
+
+        /// Optional actor JSON
         #[arg(long)]
         file: Option<PathBuf>,
     },
@@ -726,6 +802,348 @@ fn main() -> anyhow::Result<()> {
                 );
             }
         }
+        Cmd::Encounter {
+            encounter,
+            actor_ac,
+            actor_hp,
+            max_rounds,
+            focus,
+            weapon,
+            dice,
+            ability,
+            no_prof,
+            two_handed,
+            weapons,
+            dtype,
+            seed,
+            adv,
+            file,
+        } => {
+            let actor = if let Some(path) = file {
+                let text = read_text_auto(&path)?;
+                serde_json::from_str::<Actor>(&text)?
+            } else {
+                sample_fighter()
+            };
+
+            let encounter_data = read_encounter_auto(&encounter)?;
+            if encounter_data.enemies.is_empty() {
+                anyhow::bail!("encounter must contain at least one enemy");
+            }
+
+            let resolved = resolve_weapon(&weapon, weapons.as_deref())?;
+            let dtype = resolve_damage_type(dtype, &resolved);
+            let chosen_ability = pick_ability(ability, &resolved);
+            let proficient = !no_prof;
+
+            let dmg_spec = if let Some(ref s) = dice {
+                parse_damage_dice(s)?
+            } else if two_handed {
+                resolved.versatile.unwrap_or(resolved.dice)
+            } else {
+                resolved.dice
+            };
+
+            let attack_bonus = actor.attack_bonus(chosen_ability, proficient);
+            let damage_mod = actor.damage_mod(chosen_ability);
+
+            let mut rng = Dice::from_seed(seed);
+            let mode = to_mode(adv);
+            let actor_dex_mod = actor.ability_mod(Ability::Dex);
+
+            let mut focus_strategy = focus.to_lowercase();
+            let file_focus = encounter_data.focus.to_lowercase();
+            if focus_strategy == "first" && file_focus != "first" {
+                focus_strategy = file_focus;
+            }
+
+            struct EnemyState {
+                name: String,
+                ac: i32,
+                hp: i32,
+                dex_mod: i32,
+                attacks: Vec<TargetAttack>,
+                resist: HashSet<engine::DamageType>,
+                vuln: HashSet<engine::DamageType>,
+                immune: HashSet<engine::DamageType>,
+            }
+
+            impl EnemyState {
+                fn from_enc(e: EncounterEnemy) -> Self {
+                    let resist = e
+                        .resistances
+                        .iter()
+                        .filter_map(|s| parse_dtype_str(s))
+                        .collect();
+                    let vuln = e
+                        .vulnerabilities
+                        .iter()
+                        .filter_map(|s| parse_dtype_str(s))
+                        .collect();
+                    let immune = e
+                        .immunities
+                        .iter()
+                        .filter_map(|s| parse_dtype_str(s))
+                        .collect();
+                    EnemyState {
+                        name: e.name,
+                        ac: e.ac,
+                        hp: e.hp,
+                        dex_mod: e.dex_mod,
+                        attacks: e.attacks,
+                        resist,
+                        vuln,
+                        immune,
+                    }
+                }
+            }
+
+            let mut enemies: Vec<EnemyState> = encounter_data
+                .enemies
+                .into_iter()
+                .map(EnemyState::from_enc)
+                .collect();
+
+            fn enemies_defeated(enemies: &[EnemyState]) -> bool {
+                enemies.iter().all(|e| e.hp <= 0)
+            }
+
+            fn select_enemy_target(
+                strategy: &str,
+                enemies: &[EnemyState],
+                rng: &mut Dice,
+            ) -> Option<usize> {
+                let alive: Vec<(usize, i32)> = enemies
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, e)| e.hp > 0)
+                    .map(|(idx, e)| (idx, e.hp))
+                    .collect();
+                if alive.is_empty() {
+                    return None;
+                }
+                match strategy {
+                    "lowest" => alive
+                        .into_iter()
+                        .min_by_key(|&(idx, hp)| (hp, idx))
+                        .map(|(idx, _)| idx),
+                    "random" => {
+                        let len = alive.len();
+                        let sides = len.min(u8::MAX as usize) as u8;
+                        let roll = rng.die(sides) as usize - 1;
+                        let choice = roll.min(len - 1);
+                        Some(alive[choice].0)
+                    }
+                    _ => alive
+                        .into_iter()
+                        .min_by_key(|&(idx, _)| idx)
+                        .map(|(idx, _)| idx),
+                }
+            }
+
+            struct InitiativeEntry {
+                total: i32,
+                roll: i32,
+                kind: u8,
+                index: usize,
+            }
+
+            let mut initiative: Vec<InitiativeEntry> = Vec::new();
+            let actor_roll = rng.d20(engine::AdMode::Normal) as i32;
+            initiative.push(InitiativeEntry {
+                total: actor_roll + actor_dex_mod,
+                roll: actor_roll,
+                kind: 0,
+                index: 0,
+            });
+
+            for (idx, enemy) in enemies.iter().enumerate() {
+                let roll = rng.d20(engine::AdMode::Normal) as i32;
+                initiative.push(InitiativeEntry {
+                    total: roll + enemy.dex_mod,
+                    roll,
+                    kind: 1,
+                    index: idx,
+                });
+            }
+
+            initiative.sort_by(|a, b| {
+                b.total
+                    .cmp(&a.total)
+                    .then_with(|| b.roll.cmp(&a.roll))
+                    .then_with(|| a.kind.cmp(&b.kind))
+                    .then_with(|| a.index.cmp(&b.index))
+            });
+
+            let encounter_name = if encounter_data.name.is_empty() {
+                "Encounter".to_string()
+            } else {
+                encounter_data.name
+            };
+
+            println!(
+                "Encounter: {} vs {} enemies (focus: {})",
+                encounter_name,
+                enemies.len(),
+                focus_strategy
+            );
+            println!(
+                "Actor: AC {} HP {} | Weapon: {} [{}] using {:?}{}",
+                actor_ac,
+                actor_hp,
+                resolved.name,
+                dd_to_string(dmg_spec),
+                chosen_ability,
+                if proficient {
+                    " (proficient)"
+                } else {
+                    " (no prof)"
+                }
+            );
+            println!("Enemies:");
+            for enemy in &enemies {
+                println!("  - {} (AC {} HP {})", enemy.name, enemy.ac, enemy.hp);
+            }
+
+            let mut actor_hp_cur = actor_hp;
+            let mut round = 1;
+
+            while round <= max_rounds && actor_hp_cur > 0 && !enemies_defeated(&enemies) {
+                println!("=== Round {} ===", round);
+                for entry in &initiative {
+                    if actor_hp_cur <= 0 || enemies_defeated(&enemies) {
+                        break;
+                    }
+                    match entry.kind {
+                        0 => {
+                            if let Some(target_idx) =
+                                select_enemy_target(&focus_strategy, &enemies, &mut rng)
+                            {
+                                let enemy = &mut enemies[target_idx];
+                                if enemy.hp <= 0 {
+                                    continue;
+                                }
+                                let atk = engine::attack(&mut rng, mode, attack_bonus, enemy.ac);
+                                if atk.hit {
+                                    let is_crit = atk.nat20;
+                                    let raw =
+                                        engine::damage(&mut rng, dmg_spec, damage_mod, is_crit);
+                                    let dmg = engine::adjust_damage_by_type(
+                                        raw,
+                                        dtype,
+                                        &enemy.resist,
+                                        &enemy.vuln,
+                                        &enemy.immune,
+                                    );
+                                    enemy.hp = (enemy.hp - dmg).max(0);
+                                    let diff = if raw != dmg {
+                                        format!(" ({} -> {})", raw, dmg)
+                                    } else {
+                                        String::new()
+                                    };
+                                    println!(
+                                        "Actor attacks {}: roll={} total={} vs AC {} => HIT{} | dmg={}{} -> {} HP left",
+                                        enemy.name,
+                                        atk.roll,
+                                        atk.total,
+                                        enemy.ac,
+                                        if atk.nat20 { " (CRIT)" } else { "" },
+                                        dmg,
+                                        diff,
+                                        enemy.hp
+                                    );
+                                } else {
+                                    println!(
+                                        "Actor attacks {}: roll={} total={} vs AC {} => MISS{}",
+                                        enemy.name,
+                                        atk.roll,
+                                        atk.total,
+                                        enemy.ac,
+                                        if atk.nat1 { " (NAT1)" } else { "" }
+                                    );
+                                }
+                            }
+                        }
+                        _ => {
+                            if let Some(enemy) = enemies.get_mut(entry.index) {
+                                if enemy.hp <= 0 {
+                                    continue;
+                                }
+                                if let Some(attack) = enemy.attacks.first() {
+                                    let atk = engine::attack(
+                                        &mut rng,
+                                        engine::AdMode::Normal,
+                                        attack.to_hit,
+                                        actor_ac,
+                                    );
+                                    if atk.hit {
+                                        let is_crit = atk.nat20;
+                                        let dmg = engine::damage(&mut rng, attack.dice, 0, is_crit);
+                                        actor_hp_cur = (actor_hp_cur - dmg).max(0);
+                                        let dtype_str = attack
+                                            .damage_type
+                                            .map(|dt| format!(" [{:?}]", dt))
+                                            .unwrap_or_default();
+                                        println!(
+                                            "{} {} HIT{} (roll={} total={}) dmg={}{} -> Actor {} HP",
+                                            enemy.name,
+                                            attack.name,
+                                            if atk.nat20 { " CRIT" } else { "" },
+                                            atk.roll,
+                                            atk.total,
+                                            dmg,
+                                            dtype_str,
+                                            actor_hp_cur
+                                        );
+                                    } else {
+                                        println!(
+                                            "{} {} MISS{} (roll={} total={}) -> Actor {} HP",
+                                            enemy.name,
+                                            attack.name,
+                                            if atk.nat1 { " NAT1" } else { "" },
+                                            atk.roll,
+                                            atk.total,
+                                            actor_hp_cur
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                round += 1;
+            }
+
+            println!("---");
+            let enemies_down = enemies_defeated(&enemies);
+            if actor_hp_cur <= 0 && enemies_down {
+                println!("Result: Mutual KO.");
+            } else if actor_hp_cur <= 0 {
+                let remaining: Vec<_> = enemies
+                    .iter()
+                    .filter(|e| e.hp > 0)
+                    .map(|e| format!("{} ({} HP)", e.name, e.hp))
+                    .collect();
+                println!("Result: Actor falls. Remaining: {}", remaining.join(", "));
+            } else if enemies_down {
+                println!("Result: Actor victorious with {} HP left.", actor_hp_cur);
+            } else {
+                let remaining: Vec<_> = enemies
+                    .iter()
+                    .filter(|e| e.hp > 0)
+                    .map(|e| format!("{} ({} HP)", e.name, e.hp))
+                    .collect();
+                println!(
+                    "Result: Max rounds reached (Actor {} HP, Enemies: {}).",
+                    actor_hp_cur,
+                    if remaining.is_empty() {
+                        "all down".to_string()
+                    } else {
+                        remaining.join(", ")
+                    }
+                );
+            }
+        }
     }
     Ok(())
 }
@@ -781,6 +1199,11 @@ fn read_text_auto(path: &std::path::Path) -> anyhow::Result<String> {
 }
 
 fn read_target_auto(path: &std::path::Path) -> anyhow::Result<Target> {
+    let text = read_text_auto(path)?;
+    Ok(serde_json::from_str(&text)?)
+}
+
+fn read_encounter_auto(path: &std::path::Path) -> anyhow::Result<Encounter> {
     let text = read_text_auto(path)?;
     Ok(serde_json::from_str(&text)?)
 }
