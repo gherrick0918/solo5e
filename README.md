@@ -85,6 +85,26 @@ cargo run -p cli -- attack-vs --target content/targets/goblin.json --weapon long
 cargo run -p cli -- attack-vs --target content/targets/goblin.json --rounds 5 --weapon longbow --weapons content/weapons/basic.json --adv advantage --seed 999
 ```
 
+### Duel (two-sided combat with initiative)
+
+```bash
+# Actor defaults: AC 16, HP 12; target from JSON
+cargo run -p cli -- duel \
+  --target content/targets/goblin.json \
+  --weapon longsword \
+  --weapons content/weapons/basic.json \
+  --two-handed \
+  --adv normal \
+  --seed 2025
+
+# Override actor AC/HP and dice/type
+cargo run -p cli -- duel \
+  --target content/targets/goblin.json \
+  --actor-ac 15 --actor-hp 10 \
+  --weapon longsword --dice 1d10 --dtype slashing \
+  --seed 999 --adv advantage
+```
+
 
 ---
 

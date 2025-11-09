@@ -36,10 +36,24 @@ enum DType {
 }
 
 #[derive(Deserialize, Clone)]
+struct TargetAttack {
+    name: String,
+    #[serde(rename = "to_hit")]
+    to_hit: i32,
+    dice: engine::DamageDice,
+    #[serde(default)]
+    damage_type: Option<engine::DamageType>,
+}
+
+#[derive(Deserialize, Clone)]
 struct Target {
     name: String,
     ac: i32,
     hp: i32,
+    #[serde(default)]
+    dex_mod: i32,
+    #[serde(default)]
+    attacks: Vec<TargetAttack>,
     #[serde(default)]
     resistances: Vec<String>,
     #[serde(default)]
@@ -198,6 +212,64 @@ enum Cmd {
         #[arg(long)]
         file: Option<PathBuf>,
     },
+    /// Full two-sided duel vs a target (initiative, alternating turns)
+    Duel {
+        /// Path to target JSON
+        #[arg(long)]
+        target: PathBuf,
+
+        /// Actor AC (until we model armor/shield, pass it in)
+        #[arg(long, default_value_t = 16)]
+        actor_ac: i32,
+
+        /// Actor HP (until we model hit dice/level, pass it in)
+        #[arg(long, default_value_t = 12)]
+        actor_hp: i32,
+
+        /// Rounds safety cap (prevents infinite loops)
+        #[arg(long, default_value_t = 20)]
+        max_rounds: u32,
+
+        /// Weapon preset (or override with --dice)
+        #[arg(long, default_value = "longsword")]
+        weapon: String,
+
+        /// Override actor damage dice (XdY)
+        #[arg(long)]
+        dice: Option<String>,
+
+        /// Ability: auto | str | dex
+        #[arg(long, value_enum, default_value_t = AbilityChoice::Auto)]
+        ability: AbilityChoice,
+
+        /// Disable proficiency bonus for actor
+        #[arg(long, default_value_t = false)]
+        no_prof: bool,
+
+        /// Use versatile damage (two-handed) if available
+        #[arg(long, default_value_t = false)]
+        two_handed: bool,
+
+        /// Optional weapons JSON for presets
+        #[arg(long)]
+        weapons: Option<PathBuf>,
+
+        /// Override actor damage type (else from weapon/preset)
+        #[arg(long)]
+        dtype: Option<DType>,
+
+        /// RNG seed
+        #[arg(long, default_value_t = 777)]
+        seed: u64,
+
+        /// Advantage mode for ACTOR only
+        #[arg(long, value_enum, default_value_t = Adv::Normal)]
+        adv: Adv,
+
+        /// Optional actor JSON (else sample fighter)
+        #[arg(long)]
+        file: Option<PathBuf>,
+    },
 }
 
 #[derive(Parser)]
@@ -316,84 +388,9 @@ fn main() -> anyhow::Result<()> {
             } else {
                 sample_fighter()
             };
-
-            // 1) try file provided by --weapons
-            let loaded: Option<Vec<engine::Weapon>> = if let Some(ref p) = weapons {
-                load_weapons_file(p).ok()
-            } else {
-                // 2) else try repo default path (handy during dev)
-                let default = std::path::Path::new("content/weapons/basic.json");
-                load_weapons_file(default).ok()
-            };
-
-            // 3) look up by name in loaded list, else fall back to built-ins
-            struct ResolvedWeapon {
-                name: String,
-                dice: engine::DamageDice,
-                finesse: bool,
-                ranged: bool,
-                versatile: Option<engine::DamageDice>,
-                damage_type: Option<engine::DamageType>,
-            }
-
-            let resolved = if let Some(ref list) = loaded {
-                if let Some(w) = find_weapon_in(&weapon, list) {
-                    ResolvedWeapon {
-                        name: w.name.clone(),
-                        dice: w.dice,
-                        finesse: w.finesse,
-                        ranged: w.ranged,
-                        versatile: w.versatile,
-                        damage_type: w.damage_type,
-                    }
-                } else {
-                    let preset = find_weapon(&weapon).unwrap_or(WEAPONS[0]);
-                    ResolvedWeapon {
-                        name: preset.name.to_string(),
-                        dice: parse_damage_dice(preset.dice)?,
-                        finesse: preset.finesse,
-                        ranged: preset.ranged,
-                        versatile: match preset.versatile {
-                            Some(s) => Some(parse_damage_dice(s)?),
-                            None => None,
-                        },
-                        damage_type: preset_damage_type(preset.name),
-                    }
-                }
-            } else {
-                let preset = find_weapon(&weapon).unwrap_or(WEAPONS[0]);
-                ResolvedWeapon {
-                    name: preset.name.to_string(),
-                    dice: parse_damage_dice(preset.dice)?,
-                    finesse: preset.finesse,
-                    ranged: preset.ranged,
-                    versatile: match preset.versatile {
-                        Some(s) => Some(parse_damage_dice(s)?),
-                        None => None,
-                    },
-                    damage_type: preset_damage_type(preset.name),
-                }
-            };
-
-            let dtype = if let Some(dt) = dtype {
-                Some(to_engine_dtype(dt))
-            } else {
-                resolved.damage_type
-            };
-            let dtype = dtype.unwrap_or(engine::DamageType::Slashing);
-
-            // ability selection & proficiency (reuse your existing logic)
-            let chosen_ability = match ability {
-                AbilityChoice::Str => Ability::Str,
-                AbilityChoice::Dex => Ability::Dex,
-                AbilityChoice::Auto => {
-                    if resolved.ranged || resolved.finesse {
-                        Ability::Dex
-                    } else {
-                        Ability::Str
-                    }
-                }
-            };
+            let resolved = resolve_weapon(&weapon, weapons.as_deref())?;
+            let dtype = resolve_damage_type(dtype, &resolved);
+            let chosen_ability = pick_ability(ability, &resolved);
             let proficient = !no_prof;
 
             // damage dice (override via --dice if provided)
@@ -415,7 +412,7 @@ fn main() -> anyhow::Result<()> {
             let is_crit = atk.nat20;
             let dmg = engine::damage(&mut dice_rng, dmg_spec, damage_mod, is_crit);
 
-            let dmg_str = dice.unwrap_or_else(|| dd_to_string(dmg_spec));
+            let dmg_str = dice.clone().unwrap_or_else(|| dd_to_string(dmg_spec));
 
             println!(
                 "attack: {} [{}] using {:?}: roll={} bonus={:+} total={} vs ac={} => {}{}",
@@ -441,7 +438,7 @@ fn main() -> anyhow::Result<()> {
                 damage_mod,
                 if is_crit { " (crit doubles dice)" } else { "" },
                 dmg,
-                dtype
+                dtype,
             );
         }
         Cmd::AttackVs {
@@ -483,79 +480,9 @@ fn main() -> anyhow::Result<()> {
                 .filter_map(|s| parse_dtype_str(s))
                 .collect();
 
-            // Load weapons file if present (or try default path), else fall back to built-ins
-            let loaded: Option<Vec<engine::Weapon>> = if let Some(ref p) = weapons {
-                load_weapons_file(p).ok()
-            } else {
-                let default = std::path::Path::new("content/weapons/basic.json");
-                load_weapons_file(default).ok()
-            };
-
-            struct ResolvedWeapon {
-                name: String,
-                dice: engine::DamageDice,
-                finesse: bool,
-                ranged: bool,
-                versatile: Option<engine::DamageDice>,
-                damage_type: Option<engine::DamageType>,
-            }
-            let resolved = if let Some(ref list) = loaded {
-                if let Some(w) = find_weapon_in(&weapon, list) {
-                    ResolvedWeapon {
-                        name: w.name.clone(),
-                        dice: w.dice,
-                        finesse: w.finesse,
-                        ranged: w.ranged,
-                        versatile: w.versatile,
-                        damage_type: w.damage_type,
-                    }
-                } else {
-                    let p = find_weapon(&weapon).unwrap_or(WEAPONS[0]);
-                    ResolvedWeapon {
-                        name: p.name.to_string(),
-                        dice: parse_damage_dice(p.dice)?,
-                        finesse: p.finesse,
-                        ranged: p.ranged,
-                        versatile: match p.versatile {
-                            Some(s) => Some(parse_damage_dice(s)?),
-                            None => None,
-                        },
-                        damage_type: preset_damage_type(p.name),
-                    }
-                }
-            } else {
-                let p = find_weapon(&weapon).unwrap_or(WEAPONS[0]);
-                ResolvedWeapon {
-                    name: p.name.to_string(),
-                    dice: parse_damage_dice(p.dice)?,
-                    finesse: p.finesse,
-                    ranged: p.ranged,
-                    versatile: match p.versatile {
-                        Some(s) => Some(parse_damage_dice(s)?),
-                        None => None,
-                    },
-                    damage_type: preset_damage_type(p.name),
-                }
-            };
-
-            let dtype = if let Some(dt) = dtype {
-                Some(to_engine_dtype(dt))
-            } else {
-                resolved.damage_type
-            };
-            let dtype = dtype.unwrap_or(engine::DamageType::Slashing);
-
-            let chosen_ability = match ability {
-                AbilityChoice::Str => Ability::Str,
-                AbilityChoice::Dex => Ability::Dex,
-                AbilityChoice::Auto => {
-                    if resolved.ranged || resolved.finesse {
-                        Ability::Dex
-                    } else {
-                        Ability::Str
-                    }
-                }
-            };
+            let resolved = resolve_weapon(&weapon, weapons.as_deref())?;
+            let dtype = resolve_damage_type(dtype, &resolved);
+            let chosen_ability = pick_ability(ability, &resolved);
             let proficient = !no_prof;
 
             let dmg_spec = if let Some(ref s) = dice {
@@ -617,6 +544,186 @@ fn main() -> anyhow::Result<()> {
             }
             if tgt.hp <= 0 {
                 println!("{} is down.", tgt.name);
+            }
+        }
+        Cmd::Duel {
+            target,
+            actor_ac,
+            actor_hp,
+            max_rounds,
+            weapon,
+            dice,
+            ability,
+            no_prof,
+            two_handed,
+            weapons,
+            dtype,
+            seed,
+            adv,
+            file,
+        } => {
+            let actor = if let Some(path) = file {
+                let text = read_text_auto(&path)?;
+                serde_json::from_str::<Actor>(&text)?
+            } else {
+                sample_fighter()
+            };
+
+            let tgt = read_target_auto(&target)?;
+            let resist: HashSet<_> = tgt
+                .resistances
+                .iter()
+                .filter_map(|s| parse_dtype_str(s))
+                .collect();
+            let vuln: HashSet<_> = tgt
+                .vulnerabilities
+                .iter()
+                .filter_map(|s| parse_dtype_str(s))
+                .collect();
+            let immune: HashSet<_> = tgt
+                .immunities
+                .iter()
+                .filter_map(|s| parse_dtype_str(s))
+                .collect();
+
+            let resolved = resolve_weapon(&weapon, weapons.as_deref())?;
+            let actor_dtype = resolve_damage_type(dtype, &resolved);
+            let chosen_ability = pick_ability(ability, &resolved);
+            let proficient = !no_prof;
+
+            let actor_dd = if let Some(ref s) = dice {
+                parse_damage_dice(s)?
+            } else if two_handed {
+                resolved.versatile.unwrap_or(resolved.dice)
+            } else {
+                resolved.dice
+            };
+
+            let actor_atk_bonus = actor.attack_bonus(chosen_ability, proficient);
+            let actor_dmg_mod = actor.damage_mod(chosen_ability);
+            let actor_mode = to_mode(adv);
+
+            let tgt_attack = tgt
+                .attacks
+                .first()
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("Target has no attacks"))?;
+            let tgt_dtype = tgt_attack
+                .damage_type
+                .unwrap_or(engine::DamageType::Slashing);
+
+            let mut rng = Dice::from_seed(seed);
+            let actor_init = rng.d20(AdMode::Normal) as i32 + actor.ability_mod(Ability::Dex);
+            let tgt_init = rng.d20(AdMode::Normal) as i32 + tgt.dex_mod;
+            let mut actor_turn = actor_init >= tgt_init;
+
+            let mut cur_actor_hp = actor_hp;
+            let mut cur_tgt_hp = tgt.hp;
+
+            println!(
+                "Duel: Actor (AC {}, HP {}) vs {} (AC {}, HP {})",
+                actor_ac, actor_hp, tgt.name, tgt.ac, tgt.hp
+            );
+            println!(
+                "Initiative -> Actor {} vs {} {} => {} starts",
+                actor_init,
+                tgt.name,
+                tgt_init,
+                if actor_turn { "Actor" } else { &tgt.name }
+            );
+            println!(
+                "Actor weapon: {} [{}] {:?}",
+                resolved.name,
+                dd_to_string(actor_dd),
+                actor_dtype
+            );
+            println!("---");
+
+            for round in 1..=max_rounds {
+                if cur_actor_hp <= 0 || cur_tgt_hp <= 0 {
+                    break;
+                }
+                println!("Round {}", round);
+
+                if actor_turn {
+                    let atk = engine::attack(&mut rng, actor_mode, actor_atk_bonus, tgt.ac);
+                    if atk.hit {
+                        let is_crit = atk.nat20;
+                        let raw = engine::damage(&mut rng, actor_dd, actor_dmg_mod, is_crit);
+                        let adj = engine::adjust_damage_by_type(
+                            raw,
+                            actor_dtype,
+                            &resist,
+                            &vuln,
+                            &immune,
+                        );
+                        cur_tgt_hp = (cur_tgt_hp - adj).max(0);
+                        println!(
+                            "Actor HIT{} (roll={} total={}) dmg={} [{:?}] -> {} HP left",
+                            if atk.nat20 { " CRIT" } else { "" },
+                            atk.roll,
+                            atk.total,
+                            adj,
+                            actor_dtype,
+                            cur_tgt_hp
+                        );
+                    } else {
+                        println!(
+                            "Actor MISS{} (roll={} total={}) -> {} HP left",
+                            if atk.nat1 { " NAT1" } else { "" },
+                            atk.roll,
+                            atk.total,
+                            cur_tgt_hp
+                        );
+                    }
+                } else {
+                    let atk = engine::attack(&mut rng, AdMode::Normal, tgt_attack.to_hit, actor_ac);
+                    if atk.hit {
+                        let is_crit = atk.nat20;
+                        let dmg = engine::damage(&mut rng, tgt_attack.dice, 0, is_crit);
+                        cur_actor_hp = (cur_actor_hp - dmg).max(0);
+                        println!(
+                            "{} {} HIT{} (roll={} total={}) dmg={} [{:?}] -> Actor {} HP left",
+                            tgt.name,
+                            &tgt_attack.name,
+                            if atk.nat20 { " CRIT" } else { "" },
+                            atk.roll,
+                            atk.total,
+                            dmg,
+                            tgt_dtype,
+                            cur_actor_hp
+                        );
+                    } else {
+                        println!(
+                            "{} {} MISS{} (roll={} total={}) -> Actor {} HP left",
+                            tgt.name,
+                            &tgt_attack.name,
+                            if atk.nat1 { " NAT1" } else { "" },
+                            atk.roll,
+                            atk.total,
+                            cur_actor_hp
+                        );
+                    }
+                }
+
+                if cur_actor_hp <= 0 || cur_tgt_hp <= 0 {
+                    break;
+                }
+                actor_turn = !actor_turn;
+            }
+
+            println!("---");
+            if cur_tgt_hp <= 0 && cur_actor_hp > 0 {
+                println!("Result: Actor defeats {}.", tgt.name);
+            } else if cur_actor_hp <= 0 && cur_tgt_hp > 0 {
+                println!("Result: {} defeats Actor.", tgt.name);
+            } else if cur_actor_hp <= 0 && cur_tgt_hp <= 0 {
+                println!("Result: Mutual KO.");
+            } else {
+                println!(
+                    "Result: Max rounds reached ({} HP vs {} HP).",
+                    cur_actor_hp, cur_tgt_hp
+                );
             }
         }
     }
@@ -704,6 +811,75 @@ fn find_weapon_in<'a>(name: &str, list: &'a [engine::Weapon]) -> Option<&'a engi
 
 fn dd_to_string(dd: engine::DamageDice) -> String {
     format!("{}d{}", dd.count, dd.sides)
+}
+
+#[derive(Clone)]
+struct ResolvedWeapon {
+    name: String,
+    dice: engine::DamageDice,
+    finesse: bool,
+    ranged: bool,
+    versatile: Option<engine::DamageDice>,
+    damage_type: Option<engine::DamageType>,
+}
+
+fn resolve_weapon(
+    weapon: &str,
+    weapons_path: Option<&std::path::Path>,
+) -> anyhow::Result<ResolvedWeapon> {
+    let loaded: Option<Vec<engine::Weapon>> = if let Some(path) = weapons_path {
+        load_weapons_file(path).ok()
+    } else {
+        let default = std::path::Path::new("content/weapons/basic.json");
+        load_weapons_file(default).ok()
+    };
+
+    if let Some(ref list) = loaded {
+        if let Some(w) = find_weapon_in(weapon, list) {
+            return Ok(ResolvedWeapon {
+                name: w.name.clone(),
+                dice: w.dice,
+                finesse: w.finesse,
+                ranged: w.ranged,
+                versatile: w.versatile,
+                damage_type: w.damage_type,
+            });
+        }
+    }
+
+    let preset = find_weapon(weapon).unwrap_or(WEAPONS[0]);
+    Ok(ResolvedWeapon {
+        name: preset.name.to_string(),
+        dice: parse_damage_dice(preset.dice)?,
+        finesse: preset.finesse,
+        ranged: preset.ranged,
+        versatile: match preset.versatile {
+            Some(s) => Some(parse_damage_dice(s)?),
+            None => None,
+        },
+        damage_type: preset_damage_type(preset.name),
+    })
+}
+
+fn resolve_damage_type(dtype: Option<DType>, weapon: &ResolvedWeapon) -> engine::DamageType {
+    dtype
+        .map(to_engine_dtype)
+        .or(weapon.damage_type)
+        .unwrap_or(engine::DamageType::Slashing)
+}
+
+fn pick_ability(choice: AbilityChoice, weapon: &ResolvedWeapon) -> Ability {
+    match choice {
+        AbilityChoice::Str => Ability::Str,
+        AbilityChoice::Dex => Ability::Dex,
+        AbilityChoice::Auto => {
+            if weapon.ranged || weapon.finesse {
+                Ability::Dex
+            } else {
+                Ability::Str
+            }
+        }
+    }
 }
 
 fn to_engine_dtype(dt: DType) -> engine::DamageType {

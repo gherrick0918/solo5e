@@ -8,10 +8,38 @@
     "name": { "type": "string", "minLength": 1 },
     "ac":   { "type": "integer", "minimum": 1, "maximum": 30 },
     "hp":   { "type": "integer", "minimum": 1, "maximum": 1000 },
+
+    "dex_mod": { "type": "integer" },
+
+    "attacks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "name": { "type": "string", "minLength": 1 },
+          "to_hit": { "type": "integer" },
+          "dice": {
+            "type": "object",
+            "properties": {
+              "count": { "type": "integer", "minimum": 1, "maximum": 20 },
+              "sides": { "type": "integer", "minimum": 2, "maximum": 100 }
+            },
+            "required": ["count", "sides"],
+            "additionalProperties": false
+          },
+          "damage_type": {
+            "type": "string",
+            "enum": ["bludgeoning","piercing","slashing","fire","cold","lightning","acid","poison","psychic","radiant","necrotic","thunder","force"]
+          }
+        },
+        "required": ["name", "to_hit", "dice"]
+      }
+    },
+
     "resistances":   { "type": "array", "items": { "type": "string" } },
     "vulnerabilities": { "type": "array", "items": { "type": "string" } },
     "immunities":    { "type": "array", "items": { "type": "string" } }
   },
   "required": ["name", "ac", "hp"]
 }
-
