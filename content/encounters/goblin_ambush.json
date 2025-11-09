@@ -1,0 +1,20 @@
+{
+  "name": "Goblin Ambush",
+  "focus": "first",
+  "enemies": [
+    {
+      "name": "Goblin A",
+      "ac": 15,
+      "hp": 7,
+      "dex_mod": 2,
+      "attacks": [{ "name": "Scimitar", "to_hit": 4, "dice": { "count": 1, "sides": 6 }, "damage_type": "slashing" }]
+    },
+    {
+      "name": "Goblin B",
+      "ac": 15,
+      "hp": 7,
+      "dex_mod": 2,
+      "attacks": [{ "name": "Scimitar", "to_hit": 4, "dice": { "count": 1, "sides": 6 }, "damage_type": "slashing" }]
+    }
+  ]
+}

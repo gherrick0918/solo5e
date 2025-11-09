@@ -105,6 +105,15 @@ cargo run -p cli -- duel \
   --seed 999 --adv advantage
 ```
 
+### Encounter (actor vs many)
+
+```bash
+cargo run -p cli -- encounter \
+  --encounter content/encounters/goblin_ambush.json \
+  --weapon longsword --weapons content/weapons/basic.json \
+  --two-handed --focus lowest --seed 4242
+```
+
 
 ---
 
