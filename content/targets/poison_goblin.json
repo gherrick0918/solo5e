@@ -10,7 +10,7 @@
       "dice": { "count": 1, "sides": 4 },
       "damage_type": "piercing",
       "apply_condition": {
-        "condition": "poisoned",
+        "kind": "poisoned",
         "save": { "ability": "con", "dc": 12 },
         "duration": { "save_ends_each_turn": true }
       }
