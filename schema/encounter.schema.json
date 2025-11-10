@@ -17,6 +17,19 @@
           "ac": { "type": "integer" },
           "hp": { "type": "integer" },
           "dex_mod": { "type": "integer" },
+          "abilities": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "str": { "type": "integer", "minimum": 1, "maximum": 30 },
+              "dex": { "type": "integer", "minimum": 1, "maximum": 30 },
+              "con": { "type": "integer", "minimum": 1, "maximum": 30 },
+              "int": { "type": "integer", "minimum": 1, "maximum": 30 },
+              "wis": { "type": "integer", "minimum": 1, "maximum": 30 },
+              "cha": { "type": "integer", "minimum": 1, "maximum": 30 }
+            },
+            "required": ["str", "dex", "con", "int", "wis", "cha"]
+          },
           "attacks": {
             "type": "array",
             "items": {
@@ -37,18 +50,53 @@
                 "damage_type": {
                   "type": "string",
                   "enum": ["bludgeoning","piercing","slashing","fire","cold","lightning","acid","poison","psychic","radiant","necrotic","thunder","force"]
-                }
+                },
+                "apply_condition": { "$ref": "#/definitions/applyCondition" }
               },
               "required": ["name", "to_hit", "dice"]
             }
           },
           "resistances": { "type": "array", "items": { "type": "string" } },
           "vulnerabilities": { "type": "array", "items": { "type": "string" } },
-          "immunities": { "type": "array", "items": { "type": "string" } }
+          "immunities": { "type": "array", "items": { "type": "string" } },
+          "conditions": {
+            "type": "array",
+            "items": { "$ref": "target.schema.json#/definitions/conditionKind" },
+            "default": []
+          }
         },
         "required": ["name", "ac", "hp"]
       }
     }
   },
-  "required": ["enemies"]
+  "required": ["enemies"],
+  "definitions": {
+    "savingThrow": {
+      "type": "object",
+      "required": ["ability", "dc"],
+      "properties": {
+        "ability": { "type": "string", "enum": ["str", "dex", "con", "int", "wis", "cha"] },
+        "dc": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "conditionDuration": {
+      "type": "object",
+      "properties": {
+        "until": { "type": "string", "enum": ["start_of_turn", "end_of_turn"] },
+        "save_ends_each_turn": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    "applyCondition": {
+      "type": "object",
+      "required": ["condition"],
+      "properties": {
+        "condition": { "$ref": "target.schema.json#/definitions/conditionKind" },
+        "save": { "$ref": "#/definitions/savingThrow" },
+        "duration": { "$ref": "#/definitions/conditionDuration" }
+      },
+      "additionalProperties": false
+    }
+  }
 }

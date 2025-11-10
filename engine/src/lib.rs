@@ -3,12 +3,34 @@ use rand_chacha::ChaCha8Rng;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
+pub mod conditions;
+
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum AdMode {
     Normal,
     Advantage,
     Disadvantage,
+}
+
+impl From<conditions::Vantage> for AdMode {
+    fn from(value: conditions::Vantage) -> Self {
+        match value {
+            conditions::Vantage::Normal => AdMode::Normal,
+            conditions::Vantage::Advantage => AdMode::Advantage,
+            conditions::Vantage::Disadvantage => AdMode::Disadvantage,
+        }
+    }
+}
+
+impl From<AdMode> for conditions::Vantage {
+    fn from(value: AdMode) -> Self {
+        match value {
+            AdMode::Normal => conditions::Vantage::Normal,
+            AdMode::Advantage => conditions::Vantage::Advantage,
+            AdMode::Disadvantage => conditions::Vantage::Disadvantage,
+        }
+    }
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -108,6 +130,12 @@ pub enum Ability {
     Int,
     Wis,
     Cha,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SavingThrow {
+    pub ability: Ability,
+    pub dc: i32,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
