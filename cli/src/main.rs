@@ -1,5 +1,9 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use encoding_rs::Encoding;
+use engine::conditions::{
+    maybe_apply_on_hit_condition, process_turn_boundary, vantage_from_conditions, ActiveCondition,
+    AttackStyle, ConditionKind, ConditionSpec, TurnBoundary, Vantage,
+};
 use engine::{Ability, AbilityScores, Actor, AdMode, Dice, Skill};
 use serde::Deserialize;
 use std::{collections::HashSet, fs, path::PathBuf};
@@ -43,6 +47,10 @@ struct TargetAttack {
     dice: engine::DamageDice,
     #[serde(default)]
     damage_type: Option<engine::DamageType>,
+    #[serde(default)]
+    ranged: bool,
+    #[serde(default)]
+    apply_condition: Option<ConditionSpec>,
 }
 
 #[derive(Deserialize, Clone)]
@@ -53,6 +61,8 @@ struct Target {
     #[serde(default)]
     dex_mod: i32,
     #[serde(default)]
+    abilities: Option<AbilityScores>,
+    #[serde(default)]
     attacks: Vec<TargetAttack>,
     #[serde(default)]
     resistances: Vec<String>,
@@ -60,6 +70,28 @@ struct Target {
     vulnerabilities: Vec<String>,
     #[serde(default)]
     immunities: Vec<String>,
+    #[serde(default)]
+    conditions: Vec<ConditionKind>,
+}
+
+impl Target {
+    fn ability_mod(&self, ability: Ability) -> i32 {
+        if let Some(ref scores) = self.abilities {
+            scores.mod_of(ability)
+        } else if ability == Ability::Dex {
+            self.dex_mod
+        } else {
+            0
+        }
+    }
+
+    fn dexterity_mod(&self) -> i32 {
+        if let Some(ref scores) = self.abilities {
+            scores.mod_of(Ability::Dex)
+        } else {
+            self.dex_mod
+        }
+    }
 }
 
 #[derive(Deserialize, Clone)]
@@ -70,6 +102,8 @@ struct EncounterEnemy {
     #[serde(default)]
     dex_mod: i32,
     #[serde(default)]
+    abilities: Option<AbilityScores>,
+    #[serde(default)]
     attacks: Vec<TargetAttack>,
     #[serde(default)]
     resistances: Vec<String>,
@@ -77,6 +111,8 @@ struct EncounterEnemy {
     vulnerabilities: Vec<String>,
     #[serde(default)]
     immunities: Vec<String>,
+    #[serde(default)]
+    conditions: Vec<ConditionKind>,
 }
 
 #[derive(Deserialize)]
@@ -90,6 +126,40 @@ struct Encounter {
 
 fn default_focus() -> String {
     "first".to_string()
+}
+
+fn parse_condition_list(src: &Option<String>) -> Vec<ConditionKind> {
+    fn map_one(segment: &str) -> Option<ConditionKind> {
+        match segment.trim().to_lowercase().as_str() {
+            "poisoned" => Some(ConditionKind::Poisoned),
+            "prone" => Some(ConditionKind::Prone),
+            "restrained" => Some(ConditionKind::Restrained),
+            _ => None,
+        }
+    }
+
+    match src {
+        None => vec![],
+        Some(text) => text.split(',').filter_map(map_one).collect(),
+    }
+}
+
+fn add_initial_conditions(
+    name: &str,
+    kinds: Vec<ConditionKind>,
+    bag: &mut Vec<ActiveCondition>,
+    mut log: impl FnMut(String),
+) {
+    for kind in kinds {
+        bag.push(ActiveCondition {
+            kind,
+            save_ends_each_turn: false,
+            end_phase: None,
+            end_save: None,
+            pending_one_turn: false,
+        });
+        log(format!("[COND] {} starts with {:?}", name, kind));
+    }
 }
 
 #[derive(Subcommand)]
@@ -260,6 +330,14 @@ enum Cmd {
         #[arg(long, default_value_t = 20)]
         max_rounds: u32,
 
+        /// Starting conditions applied to the actor (comma-separated)
+        #[arg(long = "actor-cond")]
+        actor_cond: Option<String>,
+
+        /// Starting conditions applied to the enemy (comma-separated)
+        #[arg(long = "enemy-cond")]
+        enemy_cond: Option<String>,
+
         /// Weapon preset (or override with --dice)
         #[arg(long, default_value = "longsword")]
         weapon: String,
@@ -315,6 +393,14 @@ enum Cmd {
         /// Rounds safety cap
         #[arg(long, default_value_t = 50)]
         max_rounds: u32,
+
+        /// Starting conditions for the actor (comma-separated)
+        #[arg(long = "actor-cond")]
+        actor_cond: Option<String>,
+
+        /// Starting conditions applied to each enemy (comma-separated)
+        #[arg(long = "enemy-cond")]
+        enemy_cond: Option<String>,
 
         /// Focus strategy for actor: first | lowest | random
         #[arg(long, default_value = "first")]
@@ -627,6 +713,8 @@ fn main() -> anyhow::Result<()> {
             actor_ac,
             actor_hp,
             max_rounds,
+            actor_cond,
+            enemy_cond,
             weapon,
             dice,
             ability,
@@ -688,9 +776,26 @@ fn main() -> anyhow::Result<()> {
                 .damage_type
                 .unwrap_or(engine::DamageType::Slashing);
 
+            let mut actor_conditions: Vec<ActiveCondition> = Vec::new();
+            let mut enemy_conditions: Vec<ActiveCondition> = Vec::new();
+
+            add_initial_conditions(
+                "Actor",
+                parse_condition_list(&actor_cond),
+                &mut actor_conditions,
+                |msg| println!("{}", msg),
+            );
+
+            let mut enemy_initial = tgt.conditions.clone();
+            let mut extra_enemy = parse_condition_list(&enemy_cond);
+            enemy_initial.append(&mut extra_enemy);
+            add_initial_conditions(&tgt.name, enemy_initial, &mut enemy_conditions, |msg| {
+                println!("{}", msg)
+            });
+
             let mut rng = Dice::from_seed(seed);
             let actor_init = rng.d20(AdMode::Normal) as i32 + actor.ability_mod(Ability::Dex);
-            let tgt_init = rng.d20(AdMode::Normal) as i32 + tgt.dex_mod;
+            let tgt_init = rng.d20(AdMode::Normal) as i32 + tgt.dexterity_mod();
             let mut actor_turn = actor_init >= tgt_init;
 
             let mut cur_actor_hp = actor_hp;
@@ -722,7 +827,28 @@ fn main() -> anyhow::Result<()> {
                 println!("Round {}", round);
 
                 if actor_turn {
-                    let atk = engine::attack(&mut rng, actor_mode, actor_atk_bonus, tgt.ac);
+                    process_turn_boundary(
+                        TurnBoundary::StartOfTurn,
+                        "Actor",
+                        &mut actor_conditions,
+                        |ability, _dc| {
+                            let roll = rng.d20(AdMode::Normal) as i32;
+                            let total = roll + actor.save_mod(ability);
+                            (roll, total)
+                        },
+                        |msg| println!("{}", msg),
+                    );
+
+                    let style = if resolved.ranged {
+                        AttackStyle::Ranged
+                    } else {
+                        AttackStyle::Melee
+                    };
+                    let base_vantage: Vantage = actor_mode.into();
+                    let cond_vantage =
+                        vantage_from_conditions(&actor_conditions, &enemy_conditions, style);
+                    let final_mode: AdMode = base_vantage.combine(cond_vantage).into();
+                    let atk = engine::attack(&mut rng, final_mode, actor_atk_bonus, tgt.ac);
                     if atk.hit {
                         let is_crit = atk.nat20;
                         let raw = engine::damage(&mut rng, actor_dd, actor_dmg_mod, is_crit);
@@ -752,8 +878,41 @@ fn main() -> anyhow::Result<()> {
                             cur_tgt_hp
                         );
                     }
+
+                    process_turn_boundary(
+                        TurnBoundary::EndOfTurn,
+                        "Actor",
+                        &mut actor_conditions,
+                        |ability, _dc| {
+                            let roll = rng.d20(AdMode::Normal) as i32;
+                            let total = roll + actor.save_mod(ability);
+                            (roll, total)
+                        },
+                        |msg| println!("{}", msg),
+                    );
                 } else {
-                    let atk = engine::attack(&mut rng, AdMode::Normal, tgt_attack.to_hit, actor_ac);
+                    process_turn_boundary(
+                        TurnBoundary::StartOfTurn,
+                        &tgt.name,
+                        &mut enemy_conditions,
+                        |ability, _dc| {
+                            let roll = rng.d20(AdMode::Normal) as i32;
+                            let total = roll + tgt.ability_mod(ability);
+                            (roll, total)
+                        },
+                        |msg| println!("{}", msg),
+                    );
+
+                    let style = if tgt_attack.ranged {
+                        AttackStyle::Ranged
+                    } else {
+                        AttackStyle::Melee
+                    };
+                    let base_vantage = Vantage::Normal;
+                    let cond_vantage =
+                        vantage_from_conditions(&enemy_conditions, &actor_conditions, style);
+                    let final_mode: AdMode = base_vantage.combine(cond_vantage).into();
+                    let atk = engine::attack(&mut rng, final_mode, tgt_attack.to_hit, actor_ac);
                     if atk.hit {
                         let is_crit = atk.nat20;
                         let dmg = engine::damage(&mut rng, tgt_attack.dice, 0, is_crit);
@@ -769,6 +928,19 @@ fn main() -> anyhow::Result<()> {
                             tgt_dtype,
                             cur_actor_hp
                         );
+                        if let Some(spec) = tgt_attack.apply_condition.as_ref() {
+                            maybe_apply_on_hit_condition(
+                                "Actor",
+                                &mut actor_conditions,
+                                spec,
+                                |ability, _dc| {
+                                    let roll = rng.d20(AdMode::Normal) as i32;
+                                    let total = roll + actor.save_mod(ability);
+                                    (roll, total)
+                                },
+                                |msg| println!("{}", msg),
+                            );
+                        }
                     } else {
                         println!(
                             "{} {} MISS{} (roll={} total={}) -> Actor {} HP left",
@@ -780,6 +952,18 @@ fn main() -> anyhow::Result<()> {
                             cur_actor_hp
                         );
                     }
+
+                    process_turn_boundary(
+                        TurnBoundary::EndOfTurn,
+                        &tgt.name,
+                        &mut enemy_conditions,
+                        |ability, _dc| {
+                            let roll = rng.d20(AdMode::Normal) as i32;
+                            let total = roll + tgt.ability_mod(ability);
+                            (roll, total)
+                        },
+                        |msg| println!("{}", msg),
+                    );
                 }
 
                 if cur_actor_hp <= 0 || cur_tgt_hp <= 0 {
@@ -808,6 +992,8 @@ fn main() -> anyhow::Result<()> {
             actor_hp,
             max_rounds,
             focus,
+            actor_cond,
+            enemy_cond,
             weapon,
             dice,
             ability,
@@ -862,14 +1048,16 @@ fn main() -> anyhow::Result<()> {
                 ac: i32,
                 hp: i32,
                 dex_mod: i32,
+                abilities: Option<AbilityScores>,
                 attacks: Vec<TargetAttack>,
                 resist: HashSet<engine::DamageType>,
                 vuln: HashSet<engine::DamageType>,
                 immune: HashSet<engine::DamageType>,
+                conditions: Vec<ActiveCondition>,
             }
 
             impl EnemyState {
-                fn from_enc(e: EncounterEnemy) -> Self {
+                fn from_enc(e: EncounterEnemy, mut log: impl FnMut(String)) -> Self {
                     let resist = e
                         .resistances
                         .iter()
@@ -885,15 +1073,29 @@ fn main() -> anyhow::Result<()> {
                         .iter()
                         .filter_map(|s| parse_dtype_str(s))
                         .collect();
+                    let mut conditions = Vec::new();
+                    add_initial_conditions(&e.name, e.conditions.clone(), &mut conditions, |msg| {
+                        log(msg);
+                    });
                     EnemyState {
                         name: e.name,
                         ac: e.ac,
                         hp: e.hp,
                         dex_mod: e.dex_mod,
+                        abilities: e.abilities,
                         attacks: e.attacks,
                         resist,
                         vuln,
                         immune,
+                        conditions,
+                    }
+                }
+
+                fn dexterity_mod(&self) -> i32 {
+                    if let Some(ref scores) = self.abilities {
+                        scores.mod_of(Ability::Dex)
+                    } else {
+                        self.dex_mod
                     }
                 }
             }
@@ -901,8 +1103,28 @@ fn main() -> anyhow::Result<()> {
             let mut enemies: Vec<EnemyState> = encounter_data
                 .enemies
                 .into_iter()
-                .map(EnemyState::from_enc)
+                .map(|e| EnemyState::from_enc(e, |msg| println!("{}", msg)))
                 .collect();
+
+            let mut actor_conditions: Vec<ActiveCondition> = Vec::new();
+            add_initial_conditions(
+                "Actor",
+                parse_condition_list(&actor_cond),
+                &mut actor_conditions,
+                |msg| println!("{}", msg),
+            );
+
+            let enemy_cli_conditions = parse_condition_list(&enemy_cond);
+            if !enemy_cli_conditions.is_empty() {
+                for enemy in &mut enemies {
+                    add_initial_conditions(
+                        &enemy.name,
+                        enemy_cli_conditions.clone(),
+                        &mut enemy.conditions,
+                        |msg| println!("{}", msg),
+                    );
+                }
+            }
 
             fn enemies_defeated(enemies: &[EnemyState]) -> bool {
                 enemies.iter().all(|e| e.hp <= 0)
@@ -960,7 +1182,7 @@ fn main() -> anyhow::Result<()> {
             for (idx, enemy) in enemies.iter().enumerate() {
                 let roll = rng.d20(engine::AdMode::Normal) as i32;
                 initiative.push(InitiativeEntry {
-                    total: roll + enemy.dex_mod,
+                    total: roll + enemy.dexterity_mod(),
                     roll,
                     kind: 1,
                     index: idx,
@@ -1016,63 +1238,142 @@ fn main() -> anyhow::Result<()> {
                     }
                     match entry.kind {
                         0 => {
+                            process_turn_boundary(
+                                TurnBoundary::StartOfTurn,
+                                "Actor",
+                                &mut actor_conditions,
+                                |ability, _dc| {
+                                    let roll = rng.d20(AdMode::Normal) as i32;
+                                    let total = roll + actor.save_mod(ability);
+                                    (roll, total)
+                                },
+                                |msg| println!("{}", msg),
+                            );
+
                             if let Some(target_idx) =
                                 select_enemy_target(&focus_strategy, &enemies, &mut rng)
                             {
                                 let enemy = &mut enemies[target_idx];
-                                if enemy.hp <= 0 {
-                                    continue;
-                                }
-                                let atk = engine::attack(&mut rng, mode, attack_bonus, enemy.ac);
-                                if atk.hit {
-                                    let is_crit = atk.nat20;
-                                    let raw =
-                                        engine::damage(&mut rng, dmg_spec, damage_mod, is_crit);
-                                    let dmg = engine::adjust_damage_by_type(
-                                        raw,
-                                        dtype,
-                                        &enemy.resist,
-                                        &enemy.vuln,
-                                        &enemy.immune,
-                                    );
-                                    enemy.hp = (enemy.hp - dmg).max(0);
-                                    let diff = if raw != dmg {
-                                        format!(" ({} -> {})", raw, dmg)
+                                if enemy.hp > 0 {
+                                    let style = if resolved.ranged {
+                                        AttackStyle::Ranged
                                     } else {
-                                        String::new()
+                                        AttackStyle::Melee
                                     };
-                                    println!(
-                                        "Actor attacks {}: roll={} total={} vs AC {} => HIT{} | dmg={}{} -> {} HP left",
-                                        enemy.name,
-                                        atk.roll,
-                                        atk.total,
-                                        enemy.ac,
-                                        if atk.nat20 { " (CRIT)" } else { "" },
-                                        dmg,
-                                        diff,
-                                        enemy.hp
+                                    let base_vantage: Vantage = mode.into();
+                                    let cond_vantage = vantage_from_conditions(
+                                        &actor_conditions,
+                                        &enemy.conditions,
+                                        style,
                                     );
-                                } else {
-                                    println!(
-                                        "Actor attacks {}: roll={} total={} vs AC {} => MISS{}",
-                                        enemy.name,
-                                        atk.roll,
-                                        atk.total,
+                                    let final_mode: AdMode =
+                                        base_vantage.combine(cond_vantage).into();
+                                    let atk = engine::attack(
+                                        &mut rng,
+                                        final_mode,
+                                        attack_bonus,
                                         enemy.ac,
-                                        if atk.nat1 { " (NAT1)" } else { "" }
                                     );
+                                    if atk.hit {
+                                        let is_crit = atk.nat20;
+                                        let raw =
+                                            engine::damage(&mut rng, dmg_spec, damage_mod, is_crit);
+                                        let dmg = engine::adjust_damage_by_type(
+                                            raw,
+                                            dtype,
+                                            &enemy.resist,
+                                            &enemy.vuln,
+                                            &enemy.immune,
+                                        );
+                                        enemy.hp = (enemy.hp - dmg).max(0);
+                                        let diff = if raw != dmg {
+                                            format!(" ({} -> {})", raw, dmg)
+                                        } else {
+                                            String::new()
+                                        };
+                                        println!(
+                                            "Actor attacks {}: roll={} total={} vs AC {} => HIT{} | dmg={}{} -> {} HP left",
+                                            enemy.name,
+                                            atk.roll,
+                                            atk.total,
+                                            enemy.ac,
+                                            if atk.nat20 { " (CRIT)" } else { "" },
+                                            dmg,
+                                            diff,
+                                            enemy.hp
+                                        );
+                                    } else {
+                                        println!(
+                                            "Actor attacks {}: roll={} total={} vs AC {} => MISS{}",
+                                            enemy.name,
+                                            atk.roll,
+                                            atk.total,
+                                            enemy.ac,
+                                            if atk.nat1 { " (NAT1)" } else { "" }
+                                        );
+                                    }
                                 }
                             }
+
+                            process_turn_boundary(
+                                TurnBoundary::EndOfTurn,
+                                "Actor",
+                                &mut actor_conditions,
+                                |ability, _dc| {
+                                    let roll = rng.d20(AdMode::Normal) as i32;
+                                    let total = roll + actor.save_mod(ability);
+                                    (roll, total)
+                                },
+                                |msg| println!("{}", msg),
+                            );
                         }
                         _ => {
                             if let Some(enemy) = enemies.get_mut(entry.index) {
                                 if enemy.hp <= 0 {
                                     continue;
                                 }
+
+                                let abilities_ref = enemy.abilities.clone();
+                                let dex_mod = enemy.dex_mod;
+                                process_turn_boundary(
+                                    TurnBoundary::StartOfTurn,
+                                    &enemy.name,
+                                    &mut enemy.conditions,
+                                    |ability, _dc| {
+                                        let roll = rng.d20(AdMode::Normal) as i32;
+                                        let modifier = abilities_ref
+                                            .as_ref()
+                                            .map(|scores| scores.mod_of(ability))
+                                            .unwrap_or_else(|| {
+                                                if ability == Ability::Dex {
+                                                    dex_mod
+                                                } else {
+                                                    0
+                                                }
+                                            });
+                                        let total = roll + modifier;
+                                        (roll, total)
+                                    },
+                                    |msg| println!("{}", msg),
+                                );
+
                                 if let Some(attack) = enemy.attacks.first() {
+                                    let style = if attack.ranged {
+                                        AttackStyle::Ranged
+                                    } else {
+                                        AttackStyle::Melee
+                                    };
+                                    let base_vantage = Vantage::Normal;
+                                    let cond_vantage = vantage_from_conditions(
+                                        &enemy.conditions,
+                                        &actor_conditions,
+                                        style,
+                                    );
+                                    let final_mode: AdMode =
+                                        base_vantage.combine(cond_vantage).into();
                                     let atk = engine::attack(
                                         &mut rng,
-                                        engine::AdMode::Normal,
+                                        final_mode,
                                         attack.to_hit,
                                         actor_ac,
                                     );
@@ -1095,6 +1396,19 @@ fn main() -> anyhow::Result<()> {
                                             dtype_str,
                                             actor_hp_cur
                                         );
+                                        if let Some(spec) = attack.apply_condition.as_ref() {
+                                            maybe_apply_on_hit_condition(
+                                                "Actor",
+                                                &mut actor_conditions,
+                                                spec,
+                                                |ability, _dc| {
+                                                    let roll = rng.d20(AdMode::Normal) as i32;
+                                                    let total = roll + actor.save_mod(ability);
+                                                    (roll, total)
+                                                },
+                                                |msg| println!("{}", msg),
+                                            );
+                                        }
                                     } else {
                                         println!(
                                             "{} {} MISS{} (roll={} total={}) -> Actor {} HP",
@@ -1107,6 +1421,30 @@ fn main() -> anyhow::Result<()> {
                                         );
                                     }
                                 }
+
+                                let abilities_ref_end = enemy.abilities.clone();
+                                let dex_mod_end = enemy.dex_mod;
+                                process_turn_boundary(
+                                    TurnBoundary::EndOfTurn,
+                                    &enemy.name,
+                                    &mut enemy.conditions,
+                                    |ability, _dc| {
+                                        let roll = rng.d20(AdMode::Normal) as i32;
+                                        let modifier = abilities_ref_end
+                                            .as_ref()
+                                            .map(|scores| scores.mod_of(ability))
+                                            .unwrap_or_else(|| {
+                                                if ability == Ability::Dex {
+                                                    dex_mod_end
+                                                } else {
+                                                    0
+                                                }
+                                            });
+                                        let total = roll + modifier;
+                                        (roll, total)
+                                    },
+                                    |msg| println!("{}", msg),
+                                );
                             }
                         }
                     }
