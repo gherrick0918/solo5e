@@ -4,7 +4,7 @@ use jni::JNIEnv;
 
 #[no_mangle]
 pub extern "system" fn Java_com_solo5e_Ffi_version<'local>(
-    mut env: JNIEnv<'local>,
+    env: JNIEnv<'local>,
     _class: JClass<'local>,
 ) -> JString<'local> {
     env.new_string("solo5e-ffi 0.1.0").unwrap()
