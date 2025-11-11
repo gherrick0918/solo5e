@@ -6,6 +6,7 @@ use engine::conditions::{
 };
 use engine::life::{apply_damage, heal, process_death_save_start_of_turn, Health, LifeState};
 use engine::{Ability, AbilityScores, Actor, AdMode, Dice, Skill};
+use ffi;
 use serde::Deserialize;
 use std::{collections::HashSet, fs, path::PathBuf};
 
@@ -448,6 +449,20 @@ enum Cmd {
         /// Optional actor JSON
         #[arg(long)]
         file: Option<PathBuf>,
+    },
+    /// FFI version string
+    FfiVersion,
+    /// FFI roll function (matches JNI implementation)
+    FfiRoll {
+        /// RNG seed for determinism
+        #[arg(long, default_value_t = 42)]
+        seed: i64,
+        /// Number of dice to roll
+        #[arg(long, default_value_t = 1)]
+        n: i32,
+        /// Number of sides per die
+        #[arg(long, default_value_t = 6)]
+        sides: i32,
     },
 }
 
@@ -1611,6 +1626,13 @@ fn main() -> anyhow::Result<()> {
                 heal("Actor", &mut actor_health, 5, |msg| println!("{}", msg));
                 println!("[REST][Actor] Short rest: +5 HP");
             }
+        }
+        Cmd::FfiVersion => {
+            println!("solo5e-ffi 0.1.0");
+        }
+        Cmd::FfiRoll { seed, n, sides } => {
+            let result = ffi::roll_internal(seed, n, sides);
+            println!("{}", result);
         }
     }
     Ok(())
