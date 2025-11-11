@@ -57,7 +57,7 @@ cargo run -p cli -- attack-vs --target content/targets/goblin.json --rounds 5
 
 ### Testing Strategy
 - **Property-based tests**: Uses `proptest` for edge case discovery
-- **Snapshot testing**: Uses `insta` for regression testing of complex outputs  
+- **Snapshot testing**: Uses `insta` for regression testing of complex outputs
 - **Deterministic assertions**: All tests use fixed seeds for consistent results
 
 ## Content Management
