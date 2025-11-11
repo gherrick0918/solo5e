@@ -10,4 +10,4 @@ crate-type = ["cdylib"]
 jni = "0.21"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-engine = { path = "../engine" }
+engine = { path = "../engine" } # present in the workspace; not used yet but ok
