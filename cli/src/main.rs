@@ -4,6 +4,7 @@ use engine::conditions::{
     maybe_apply_on_hit_condition, process_turn_boundary, vantage_from_conditions, ActiveCondition,
     AttackStyle, ConditionKind, ConditionSpec, TurnBoundary, Vantage,
 };
+use engine::life::{apply_damage, heal, process_death_save_start_of_turn, Health, LifeState};
 use engine::{Ability, AbilityScores, Actor, AdMode, Dice, Skill};
 use serde::Deserialize;
 use std::{collections::HashSet, fs, path::PathBuf};
@@ -326,6 +327,14 @@ enum Cmd {
         #[arg(long, default_value_t = 12)]
         actor_hp: i32,
 
+        /// Auto-use a healing potion (2d4+2 averaged to 7 HP) the first time the actor drops to 0 HP.
+        #[arg(long = "auto-potion", default_value_t = false)]
+        auto_potion: bool,
+
+        /// After the duel ends, take a short rest (heal a flat 5 HP).
+        #[arg(long = "short-rest", default_value_t = false)]
+        short_rest: bool,
+
         /// Rounds safety cap (prevents infinite loops)
         #[arg(long, default_value_t = 20)]
         max_rounds: u32,
@@ -389,6 +398,14 @@ enum Cmd {
         actor_ac: i32,
         #[arg(long, default_value_t = 12)]
         actor_hp: i32,
+
+        /// Auto-use a healing potion (2d4+2 averaged to 7 HP) the first time the actor drops to 0 HP.
+        #[arg(long = "auto-potion", default_value_t = false)]
+        auto_potion: bool,
+
+        /// After the encounter ends, take a short rest (heal a flat 5 HP).
+        #[arg(long = "short-rest", default_value_t = false)]
+        short_rest: bool,
 
         /// Rounds safety cap
         #[arg(long, default_value_t = 50)]
@@ -712,6 +729,8 @@ fn main() -> anyhow::Result<()> {
             target,
             actor_ac,
             actor_hp,
+            auto_potion,
+            short_rest,
             max_rounds,
             actor_cond,
             enemy_cond,
@@ -798,7 +817,8 @@ fn main() -> anyhow::Result<()> {
             let tgt_init = rng.d20(AdMode::Normal) as i32 + tgt.dexterity_mod();
             let mut actor_turn = actor_init >= tgt_init;
 
-            let mut cur_actor_hp = actor_hp;
+            let mut actor_health = Health::new(actor_hp);
+            let mut auto_potion_left = auto_potion;
             let mut cur_tgt_hp = tgt.hp;
 
             println!(
@@ -821,12 +841,21 @@ fn main() -> anyhow::Result<()> {
             println!("---");
 
             for round in 1..=max_rounds {
-                if cur_actor_hp <= 0 || cur_tgt_hp <= 0 {
+                if matches!(actor_health.state, LifeState::Dead) || cur_tgt_hp <= 0 {
                     break;
                 }
                 println!("Round {}", round);
 
                 if actor_turn {
+                    if let Some(outcome) = process_death_save_start_of_turn(
+                        "Actor",
+                        &mut actor_health,
+                        || rng.d20(AdMode::Normal) as i32,
+                        |msg| println!("{}", msg),
+                    ) {
+                        println!("[TURN][Actor] death save: {}", outcome);
+                    }
+
                     process_turn_boundary(
                         TurnBoundary::StartOfTurn,
                         "Actor",
@@ -839,44 +868,58 @@ fn main() -> anyhow::Result<()> {
                         |msg| println!("{}", msg),
                     );
 
-                    let style = if resolved.ranged {
-                        AttackStyle::Ranged
-                    } else {
-                        AttackStyle::Melee
-                    };
-                    let base_vantage: Vantage = actor_mode.into();
-                    let cond_vantage =
-                        vantage_from_conditions(&actor_conditions, &enemy_conditions, style);
-                    let final_mode: AdMode = base_vantage.combine(cond_vantage).into();
-                    let atk = engine::attack(&mut rng, final_mode, actor_atk_bonus, tgt.ac);
-                    if atk.hit {
-                        let is_crit = atk.nat20;
-                        let raw = engine::damage(&mut rng, actor_dd, actor_dmg_mod, is_crit);
-                        let adj = engine::adjust_damage_by_type(
-                            raw,
-                            actor_dtype,
-                            &resist,
-                            &vuln,
-                            &immune,
-                        );
-                        cur_tgt_hp = (cur_tgt_hp - adj).max(0);
-                        println!(
-                            "Actor HIT{} (roll={} total={}) dmg={} [{:?}] -> {} HP left",
-                            if atk.nat20 { " CRIT" } else { "" },
-                            atk.roll,
-                            atk.total,
-                            adj,
-                            actor_dtype,
-                            cur_tgt_hp
-                        );
-                    } else {
-                        println!(
-                            "Actor MISS{} (roll={} total={}) -> {} HP left",
-                            if atk.nat1 { " NAT1" } else { "" },
-                            atk.roll,
-                            atk.total,
-                            cur_tgt_hp
-                        );
+                    match actor_health.state {
+                        LifeState::Dead => {
+                            println!("[TURN][Actor] is dead. Skipping.");
+                        }
+                        LifeState::Unconscious { .. } => {
+                            println!("[TURN][Actor] is unconscious. Skipping actions.");
+                        }
+                        LifeState::Conscious => {
+                            let style = if resolved.ranged {
+                                AttackStyle::Ranged
+                            } else {
+                                AttackStyle::Melee
+                            };
+                            let base_vantage: Vantage = actor_mode.into();
+                            let cond_vantage = vantage_from_conditions(
+                                &actor_conditions,
+                                &enemy_conditions,
+                                style,
+                            );
+                            let final_mode: AdMode = base_vantage.combine(cond_vantage).into();
+                            let atk = engine::attack(&mut rng, final_mode, actor_atk_bonus, tgt.ac);
+                            if atk.hit {
+                                let is_crit = atk.nat20;
+                                let raw =
+                                    engine::damage(&mut rng, actor_dd, actor_dmg_mod, is_crit);
+                                let adj = engine::adjust_damage_by_type(
+                                    raw,
+                                    actor_dtype,
+                                    &resist,
+                                    &vuln,
+                                    &immune,
+                                );
+                                cur_tgt_hp = (cur_tgt_hp - adj).max(0);
+                                println!(
+                                    "Actor HIT{} (roll={} total={}) dmg={} [{:?}] -> {} HP left",
+                                    if atk.nat20 { " CRIT" } else { "" },
+                                    atk.roll,
+                                    atk.total,
+                                    adj,
+                                    actor_dtype,
+                                    cur_tgt_hp
+                                );
+                            } else {
+                                println!(
+                                    "Actor MISS{} (roll={} total={}) -> {} HP left",
+                                    if atk.nat1 { " NAT1" } else { "" },
+                                    atk.roll,
+                                    atk.total,
+                                    cur_tgt_hp
+                                );
+                            }
+                        }
                     }
 
                     process_turn_boundary(
@@ -916,7 +959,13 @@ fn main() -> anyhow::Result<()> {
                     if atk.hit {
                         let is_crit = atk.nat20;
                         let dmg = engine::damage(&mut rng, tgt_attack.dice, 0, is_crit);
-                        cur_actor_hp = (cur_actor_hp - dmg).max(0);
+                        let dropped = apply_damage(
+                            "Actor",
+                            &mut actor_health,
+                            &mut actor_conditions,
+                            dmg,
+                            |msg| println!("{}", msg),
+                        );
                         println!(
                             "{} {} HIT{} (roll={} total={}) dmg={} [{:?}] -> Actor {} HP left",
                             tgt.name,
@@ -926,8 +975,13 @@ fn main() -> anyhow::Result<()> {
                             atk.total,
                             dmg,
                             tgt_dtype,
-                            cur_actor_hp
+                            actor_health.hp
                         );
+                        if dropped && auto_potion_left {
+                            heal("Actor", &mut actor_health, 7, |msg| println!("{}", msg));
+                            auto_potion_left = false;
+                            println!("[ITEM][Actor] Auto-potion consumed (2d4+2 ~ 7)");
+                        }
                         if let Some(spec) = tgt_attack.apply_condition.as_ref() {
                             maybe_apply_on_hit_condition(
                                 "Actor",
@@ -949,7 +1003,7 @@ fn main() -> anyhow::Result<()> {
                             if atk.nat1 { " NAT1" } else { "" },
                             atk.roll,
                             atk.total,
-                            cur_actor_hp
+                            actor_health.hp
                         );
                     }
 
@@ -966,30 +1020,45 @@ fn main() -> anyhow::Result<()> {
                     );
                 }
 
-                if cur_actor_hp <= 0 || cur_tgt_hp <= 0 {
+                if matches!(actor_health.state, LifeState::Dead) || cur_tgt_hp <= 0 {
                     break;
                 }
                 actor_turn = !actor_turn;
             }
 
             println!("---");
-            if cur_tgt_hp <= 0 && cur_actor_hp > 0 {
+            let actor_dead = matches!(actor_health.state, LifeState::Dead);
+            let actor_unconscious = matches!(actor_health.state, LifeState::Unconscious { .. });
+            let actor_hp_left = actor_health.hp;
+            if cur_tgt_hp <= 0 && actor_hp_left > 0 {
                 println!("Result: Actor defeats {}.", tgt.name);
-            } else if cur_actor_hp <= 0 && cur_tgt_hp > 0 {
+            } else if actor_dead {
                 println!("Result: {} defeats Actor.", tgt.name);
-            } else if cur_actor_hp <= 0 && cur_tgt_hp <= 0 {
+            } else if cur_tgt_hp <= 0 && actor_hp_left <= 0 {
                 println!("Result: Mutual KO.");
+            } else if actor_unconscious && cur_tgt_hp > 0 {
+                println!(
+                    "Result: Actor is unconscious at 0 HP; {} still stands.",
+                    tgt.name
+                );
             } else {
                 println!(
                     "Result: Max rounds reached ({} HP vs {} HP).",
-                    cur_actor_hp, cur_tgt_hp
+                    actor_hp_left, cur_tgt_hp
                 );
+            }
+
+            if short_rest && !actor_dead {
+                heal("Actor", &mut actor_health, 5, |msg| println!("{}", msg));
+                println!("[REST][Actor] Short rest: +5 HP");
             }
         }
         Cmd::Encounter {
             encounter,
             actor_ac,
             actor_hp,
+            auto_potion,
+            short_rest,
             max_rounds,
             focus,
             actor_cond,
@@ -1227,17 +1296,30 @@ fn main() -> anyhow::Result<()> {
                 println!("  - {} (AC {} HP {})", enemy.name, enemy.ac, enemy.hp);
             }
 
-            let mut actor_hp_cur = actor_hp;
+            let mut actor_health = Health::new(actor_hp);
+            let mut auto_potion_left = auto_potion;
             let mut round = 1;
 
-            while round <= max_rounds && actor_hp_cur > 0 && !enemies_defeated(&enemies) {
+            while round <= max_rounds
+                && !matches!(actor_health.state, LifeState::Dead)
+                && !enemies_defeated(&enemies)
+            {
                 println!("=== Round {} ===", round);
                 for entry in &initiative {
-                    if actor_hp_cur <= 0 || enemies_defeated(&enemies) {
+                    if matches!(actor_health.state, LifeState::Dead) || enemies_defeated(&enemies) {
                         break;
                     }
                     match entry.kind {
                         0 => {
+                            if let Some(outcome) = process_death_save_start_of_turn(
+                                "Actor",
+                                &mut actor_health,
+                                || rng.d20(AdMode::Normal) as i32,
+                                |msg| println!("{}", msg),
+                            ) {
+                                println!("[TURN][Actor] death save: {}", outcome);
+                            }
+
                             process_turn_boundary(
                                 TurnBoundary::StartOfTurn,
                                 "Actor",
@@ -1250,67 +1332,78 @@ fn main() -> anyhow::Result<()> {
                                 |msg| println!("{}", msg),
                             );
 
-                            if let Some(target_idx) =
-                                select_enemy_target(&focus_strategy, &enemies, &mut rng)
-                            {
-                                let enemy = &mut enemies[target_idx];
-                                if enemy.hp > 0 {
-                                    let style = if resolved.ranged {
-                                        AttackStyle::Ranged
-                                    } else {
-                                        AttackStyle::Melee
-                                    };
-                                    let base_vantage: Vantage = mode.into();
-                                    let cond_vantage = vantage_from_conditions(
-                                        &actor_conditions,
-                                        &enemy.conditions,
-                                        style,
-                                    );
-                                    let final_mode: AdMode =
-                                        base_vantage.combine(cond_vantage).into();
-                                    let atk = engine::attack(
-                                        &mut rng,
-                                        final_mode,
-                                        attack_bonus,
-                                        enemy.ac,
-                                    );
-                                    if atk.hit {
-                                        let is_crit = atk.nat20;
-                                        let raw =
-                                            engine::damage(&mut rng, dmg_spec, damage_mod, is_crit);
-                                        let dmg = engine::adjust_damage_by_type(
-                                            raw,
-                                            dtype,
-                                            &enemy.resist,
-                                            &enemy.vuln,
-                                            &enemy.immune,
-                                        );
-                                        enemy.hp = (enemy.hp - dmg).max(0);
-                                        let diff = if raw != dmg {
-                                            format!(" ({} -> {})", raw, dmg)
-                                        } else {
-                                            String::new()
-                                        };
-                                        println!(
-                                            "Actor attacks {}: roll={} total={} vs AC {} => HIT{} | dmg={}{} -> {} HP left",
-                                            enemy.name,
-                                            atk.roll,
-                                            atk.total,
-                                            enemy.ac,
-                                            if atk.nat20 { " (CRIT)" } else { "" },
-                                            dmg,
-                                            diff,
-                                            enemy.hp
-                                        );
-                                    } else {
-                                        println!(
-                                            "Actor attacks {}: roll={} total={} vs AC {} => MISS{}",
-                                            enemy.name,
-                                            atk.roll,
-                                            atk.total,
-                                            enemy.ac,
-                                            if atk.nat1 { " (NAT1)" } else { "" }
-                                        );
+                            match actor_health.state {
+                                LifeState::Dead => {
+                                    println!("[TURN][Actor] is dead. Skipping.");
+                                }
+                                LifeState::Unconscious { .. } => {
+                                    println!("[TURN][Actor] is unconscious. Skipping actions.");
+                                }
+                                LifeState::Conscious => {
+                                    if let Some(target_idx) =
+                                        select_enemy_target(&focus_strategy, &enemies, &mut rng)
+                                    {
+                                        let enemy = &mut enemies[target_idx];
+                                        if enemy.hp > 0 {
+                                            let style = if resolved.ranged {
+                                                AttackStyle::Ranged
+                                            } else {
+                                                AttackStyle::Melee
+                                            };
+                                            let base_vantage: Vantage = mode.into();
+                                            let cond_vantage = vantage_from_conditions(
+                                                &actor_conditions,
+                                                &enemy.conditions,
+                                                style,
+                                            );
+                                            let final_mode: AdMode =
+                                                base_vantage.combine(cond_vantage).into();
+                                            let atk = engine::attack(
+                                                &mut rng,
+                                                final_mode,
+                                                attack_bonus,
+                                                enemy.ac,
+                                            );
+                                            if atk.hit {
+                                                let is_crit = atk.nat20;
+                                                let raw = engine::damage(
+                                                    &mut rng, dmg_spec, damage_mod, is_crit,
+                                                );
+                                                let dmg = engine::adjust_damage_by_type(
+                                                    raw,
+                                                    dtype,
+                                                    &enemy.resist,
+                                                    &enemy.vuln,
+                                                    &enemy.immune,
+                                                );
+                                                enemy.hp = (enemy.hp - dmg).max(0);
+                                                let diff = if raw != dmg {
+                                                    format!(" ({} -> {})", raw, dmg)
+                                                } else {
+                                                    String::new()
+                                                };
+                                                println!(
+                                                    "Actor attacks {}: roll={} total={} vs AC {} => HIT{} | dmg={}{} -> {} HP left",
+                                                    enemy.name,
+                                                    atk.roll,
+                                                    atk.total,
+                                                    enemy.ac,
+                                                    if atk.nat20 { " (CRIT)" } else { "" },
+                                                    dmg,
+                                                    diff,
+                                                    enemy.hp
+                                                );
+                                            } else {
+                                                println!(
+                                                    "Actor attacks {}: roll={} total={} vs AC {} => MISS{}",
+                                                    enemy.name,
+                                                    atk.roll,
+                                                    atk.total,
+                                                    enemy.ac,
+                                                    if atk.nat1 { " (NAT1)" } else { "" }
+                                                );
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -1380,7 +1473,13 @@ fn main() -> anyhow::Result<()> {
                                     if atk.hit {
                                         let is_crit = atk.nat20;
                                         let dmg = engine::damage(&mut rng, attack.dice, 0, is_crit);
-                                        actor_hp_cur = (actor_hp_cur - dmg).max(0);
+                                        let dropped = apply_damage(
+                                            "Actor",
+                                            &mut actor_health,
+                                            &mut actor_conditions,
+                                            dmg,
+                                            |msg| println!("{}", msg),
+                                        );
                                         let dtype_str = attack
                                             .damage_type
                                             .map(|dt| format!(" [{:?}]", dt))
@@ -1394,8 +1493,17 @@ fn main() -> anyhow::Result<()> {
                                             atk.total,
                                             dmg,
                                             dtype_str,
-                                            actor_hp_cur
+                                            actor_health.hp
                                         );
+                                        if dropped && auto_potion_left {
+                                            heal("Actor", &mut actor_health, 7, |msg| {
+                                                println!("{}", msg)
+                                            });
+                                            auto_potion_left = false;
+                                            println!(
+                                                "[ITEM][Actor] Auto-potion consumed (2d4+2 ~ 7)"
+                                            );
+                                        }
                                         if let Some(spec) = attack.apply_condition.as_ref() {
                                             maybe_apply_on_hit_condition(
                                                 "Actor",
@@ -1417,7 +1525,7 @@ fn main() -> anyhow::Result<()> {
                                             if atk.nat1 { " NAT1" } else { "" },
                                             atk.roll,
                                             atk.total,
-                                            actor_hp_cur
+                                            actor_health.hp
                                         );
                                     }
                                 }
@@ -1454,9 +1562,12 @@ fn main() -> anyhow::Result<()> {
 
             println!("---");
             let enemies_down = enemies_defeated(&enemies);
-            if actor_hp_cur <= 0 && enemies_down {
+            let actor_dead = matches!(actor_health.state, LifeState::Dead);
+            let actor_unconscious = matches!(actor_health.state, LifeState::Unconscious { .. });
+            let actor_hp_left = actor_health.hp;
+            if actor_dead && enemies_down {
                 println!("Result: Mutual KO.");
-            } else if actor_hp_cur <= 0 {
+            } else if actor_dead {
                 let remaining: Vec<_> = enemies
                     .iter()
                     .filter(|e| e.hp > 0)
@@ -1464,7 +1575,21 @@ fn main() -> anyhow::Result<()> {
                     .collect();
                 println!("Result: Actor falls. Remaining: {}", remaining.join(", "));
             } else if enemies_down {
-                println!("Result: Actor victorious with {} HP left.", actor_hp_cur);
+                if actor_hp_left > 0 {
+                    println!("Result: Actor victorious with {} HP left.", actor_hp_left);
+                } else {
+                    println!("Result: Actor victorious but at 0 HP.");
+                }
+            } else if actor_unconscious {
+                let remaining: Vec<_> = enemies
+                    .iter()
+                    .filter(|e| e.hp > 0)
+                    .map(|e| format!("{} ({} HP)", e.name, e.hp))
+                    .collect();
+                println!(
+                    "Result: Actor is unconscious at 0 HP. Remaining: {}",
+                    remaining.join(", ")
+                );
             } else {
                 let remaining: Vec<_> = enemies
                     .iter()
@@ -1473,13 +1598,18 @@ fn main() -> anyhow::Result<()> {
                     .collect();
                 println!(
                     "Result: Max rounds reached (Actor {} HP, Enemies: {}).",
-                    actor_hp_cur,
+                    actor_hp_left,
                     if remaining.is_empty() {
                         "all down".to_string()
                     } else {
                         remaining.join(", ")
                     }
                 );
+            }
+
+            if short_rest && !actor_dead {
+                heal("Actor", &mut actor_health, 5, |msg| println!("{}", msg));
+                println!("[REST][Actor] Short rest: +5 HP");
             }
         }
     }
