@@ -146,7 +146,7 @@ pub fn process_turn_boundary(
                     let (roll, total) = saving_throw_fn(ability, dc);
                     let success = total >= dc;
                     log(format!(
-                        "[SAVE] {} makes a {:?} save DC {} vs {:?}: roll={} total={} → {}",
+                        "[SAVE][{}] makes a {:?} save DC {} vs {:?}: roll={} total={} → {}",
                         actor_name,
                         ability,
                         dc,
@@ -164,7 +164,7 @@ pub fn process_turn_boundary(
         for idx in to_remove.into_iter().rev() {
             let removed = actor_conds.remove(idx);
             log(format!(
-                "[COND] {} is no longer {:?}",
+                "[COND][{}] is no longer {:?}",
                 actor_name, removed.kind
             ));
         }
@@ -185,7 +185,7 @@ pub fn process_turn_boundary(
     for idx in to_remove.into_iter().rev() {
         let removed = actor_conds.remove(idx);
         log(format!(
-            "[COND] {}'s {:?} ends at {:?}",
+            "[COND][{}] {:?} ends at {:?}",
             actor_name, removed.kind, phase
         ));
     }
@@ -202,7 +202,7 @@ pub fn maybe_apply_on_hit_condition(
         let (roll, total) = saving_throw_fn(save.ability, save.dc);
         let success = total >= save.dc;
         log(format!(
-            "[SAVE] {} resists {:?}? {:?} save DC {}: roll={} total={} → {}",
+            "[SAVE][{}] resists {:?}? {:?} save DC {}: roll={} total={} → {}",
             target_name,
             spec.kind,
             save.ability,
@@ -218,5 +218,5 @@ pub fn maybe_apply_on_hit_condition(
 
     let active = ActiveCondition::from_spec_for_application(spec);
     target_conditions.push(active);
-    log(format!("[COND] {} gains {:?}", target_name, spec.kind));
+    log(format!("[COND][{}] gains {:?}", target_name, spec.kind));
 }
