@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://gherrick0918.github.io/solo5e/schema/weapons.schema.json",
+  "$id": "https://gherrick0918.github.io/solo5e/schema/weapons.schema.json?v=2",
   "title": "Weapons",
   "type": "array",
   "items": {

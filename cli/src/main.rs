@@ -158,7 +158,7 @@ fn add_initial_conditions(
             end_save: None,
             pending_one_turn: false,
         });
-        log(format!("[COND] {} starts with {:?}", name, kind));
+        log(format!("[COND][{}] starts with {:?}", name, kind));
     }
 }
 
@@ -330,11 +330,11 @@ enum Cmd {
         #[arg(long, default_value_t = 20)]
         max_rounds: u32,
 
-        /// Starting conditions applied to the actor (comma-separated)
+        /// Starting conditions applied to the actor (comma-separated; valid: poisoned, prone, restrained)
         #[arg(long = "actor-cond")]
         actor_cond: Option<String>,
 
-        /// Starting conditions applied to the enemy (comma-separated)
+        /// Starting conditions applied to the enemy (comma-separated; valid: poisoned, prone, restrained)
         #[arg(long = "enemy-cond")]
         enemy_cond: Option<String>,
 
@@ -394,11 +394,11 @@ enum Cmd {
         #[arg(long, default_value_t = 50)]
         max_rounds: u32,
 
-        /// Starting conditions for the actor (comma-separated)
+        /// Starting conditions for the actor (comma-separated; valid: poisoned, prone, restrained)
         #[arg(long = "actor-cond")]
         actor_cond: Option<String>,
 
-        /// Starting conditions applied to each enemy (comma-separated)
+        /// Starting conditions applied to each enemy (comma-separated; valid: poisoned, prone, restrained)
         #[arg(long = "enemy-cond")]
         enemy_cond: Option<String>,
 
