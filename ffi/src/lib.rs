@@ -7,7 +7,8 @@ pub extern "system" fn Java_com_solo5e_Ffi_version<'local>(
     env: JNIEnv<'local>,
     _class: JClass<'local>,
 ) -> JString<'local> {
-    env.new_string("solo5e-ffi 0.1.0").expect("new_string failed")
+    env.new_string("solo5e-ffi 0.1.0")
+        .expect("new_string failed")
 }
 
 /// Deterministic roller: sum of n rolls of 1..=sides using a simple LCG.
