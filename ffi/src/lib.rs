@@ -3,10 +3,10 @@ use jni::sys::{jint, jlong};
 use jni::JNIEnv;
 
 #[no_mangle]
-pub extern "system" fn Java_com_solo5e_Ffi_version(
-    mut env: JNIEnv<'_>,
-    _class: JClass<'_>,
-) -> JString {
+pub extern "system" fn Java_com_solo5e_Ffi_version<'local>(
+    env: JNIEnv<'local>,
+    _class: JClass<'local>,
+) -> JString<'local> {
     env.new_string("solo5e-ffi 0.1.0").unwrap()
 }
 
@@ -21,7 +21,9 @@ pub extern "system" fn Java_com_solo5e_Ffi_roll(
 ) -> jint {
     let mut state = seed as u64;
     let mut next = || {
-        state = state.wrapping_mul(636_413_622_384_679_3005).wrapping_add(1);
+        state = state
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1);
         ((state >> 32) as u32) as i64
     };
     let mut total = 0i64;
@@ -36,10 +38,10 @@ pub extern "system" fn Java_com_solo5e_Ffi_roll(
 
 /// Placeholder JSON echo → future hook to your engine sims
 #[no_mangle]
-pub extern "system" fn Java_com_solo5e_Ffi_echoJsonLen(
-    mut env: JNIEnv<'_>,
-    _class: JClass<'_>,
-    json: JString<'_>,
+pub extern "system" fn Java_com_solo5e_Ffi_echoJsonLen<'local>(
+    env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    json: JString<'local>,
 ) -> jint {
     let s: String = env.get_string(&json).unwrap().into();
     s.len() as jint
