@@ -4,8 +4,16 @@
    ```bash
    cargo install cargo-ndk
    ```
-2. Build the JNI library for Android (example for arm64):
+2. Build the JNI library for Android emulators (x86_64) and arm64 devices:
    ```bash
-   cargo ndk -t arm64-v8a -o app/src/main/jniLibs build -p ffi --release
+   cargo ndk -t arm64-v8a -t x86_64 -o app/src/main/jniLibs build -p ffi --release
    ```
-3. The command produces `app/src/main/jniLibs/arm64-v8a/libffi.so`, which Gradle will bundle automatically.
+3. Confirm that Gradle picks up the generated shared libraries:
+   ```
+   ls app/src/main/jniLibs/arm64-v8a/libffi.so
+   ls app/src/main/jniLibs/x86_64/libffi.so
+   ```
+4. Run instrumented tests on an emulator or device:
+   ```bash
+   ./gradlew clean :app:connectedDebugAndroidTest
+   ```
