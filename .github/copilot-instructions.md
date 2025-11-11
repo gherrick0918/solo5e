@@ -38,7 +38,10 @@ All game objects serialize/deserialize via serde with specific conventions:
 
 ### Core Commands
 ```powershell
-# Format, lint, test (CI requirements)
+# Full CI pipeline (format, lint, test)
+.\check.ps1
+
+# Or run individually:
 cargo fmt --all
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
