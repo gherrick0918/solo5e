@@ -1,3 +1,7 @@
 [workspace]
-members = ["engine", "cli", "ffi"]
+members = [
+  "engine",
+  "cli",
+  "ffi"
+]
 resolver = "2"
