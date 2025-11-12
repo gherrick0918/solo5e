@@ -12,9 +12,9 @@ class FfiSimTests {
     fun duelJsonSmoke() {
         val cfg = """
             {
-              "target_path": "content/targets/poison_goblin.json",
+              "target_id": "poison_goblin",
               "weapon": "longsword",
-              "weapons_path": "content/weapons/basic.json",
+              "weapons_id": "basic",
               "seed": 2025,
               "actor_conditions": [],
               "enemy_conditions": [],
