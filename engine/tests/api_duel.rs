@@ -14,9 +14,11 @@ fn duel_api_smoke() {
         .into_owned();
 
     let cfg = DuelConfig {
-        target_path,
+        target_path: Some(target_path),
+        weapons_path: Some(weapons_path),
+        target_id: None,
+        weapons_id: None,
         weapon: "longsword".to_string(),
-        weapons_path,
         actor_conditions: vec![],
         enemy_conditions: vec![],
         seed: 2025,
