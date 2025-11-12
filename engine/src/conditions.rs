@@ -7,6 +7,7 @@ pub enum ConditionKind {
     Poisoned,
     Prone,
     Restrained,
+    Grappled,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -116,6 +117,7 @@ pub fn vantage_from_conditions(
                 AttackStyle::Ranged => net = net.combine(Disadvantage),
             },
             Poisoned => {}
+            Grappled => {}
         }
     }
 
@@ -219,4 +221,46 @@ pub fn maybe_apply_on_hit_condition(
     let active = ActiveCondition::from_spec_for_application(spec);
     target_conditions.push(active);
     log(format!("[COND][{}] gains {:?}", target_name, spec.kind));
+}
+
+pub fn attempt_escape_grapple_end_of_turn(
+    actor_name: &str,
+    actor_str_mod: i32,
+    actor_dex_mod: i32,
+    grappler_str_mod: i32,
+    actor_conds: &mut Vec<ActiveCondition>,
+    d20: impl FnMut() -> i32,
+    mut log: impl FnMut(String),
+) {
+    if !actor_conds
+        .iter()
+        .any(|c| c.kind == ConditionKind::Grappled)
+    {
+        return;
+    }
+
+    use crate::checks::{best_of_str_dex, contested_check, ContestOutcome};
+
+    let (_, def_mod) = best_of_str_dex(actor_str_mod, actor_dex_mod);
+    match contested_check(
+        d20,
+        grappler_str_mod,
+        def_mod,
+        &mut log,
+        "Grappler (STR)",
+        &format!("{} (best STR/DEX)", actor_name),
+    ) {
+        ContestOutcome::DefenderWins | ContestOutcome::TieDefender => {
+            if let Some(idx) = actor_conds
+                .iter()
+                .position(|c| c.kind == ConditionKind::Grappled)
+            {
+                actor_conds.remove(idx);
+                log(format!("[COND][{}] escapes Grappled", actor_name));
+            }
+        }
+        _ => {
+            log("[CONTEST] Escape fails".to_string());
+        }
+    }
 }

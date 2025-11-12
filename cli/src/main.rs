@@ -1,8 +1,10 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use encoding_rs::Encoding;
+use engine::combat::actions::{attempt_grapple, attempt_shove_prone};
 use engine::conditions::{
-    maybe_apply_on_hit_condition, process_turn_boundary, vantage_from_conditions, ActiveCondition,
-    AttackStyle, ConditionKind, ConditionSpec, TurnBoundary, Vantage,
+    attempt_escape_grapple_end_of_turn, maybe_apply_on_hit_condition, process_turn_boundary,
+    vantage_from_conditions, ActiveCondition, AttackStyle, ConditionKind, ConditionSpec,
+    TurnBoundary, Vantage,
 };
 use engine::life::{apply_damage, heal, process_death_save_start_of_turn, Health, LifeState};
 use engine::{Ability, AbilityScores, Actor, AdMode, Cover, Dice, Skill};
@@ -157,6 +159,7 @@ fn parse_condition_list(src: &Option<String>) -> Vec<ConditionKind> {
             "poisoned" => Some(ConditionKind::Poisoned),
             "prone" => Some(ConditionKind::Prone),
             "restrained" => Some(ConditionKind::Restrained),
+            "grappled" => Some(ConditionKind::Grappled),
             _ => None,
         }
     }
@@ -501,6 +504,15 @@ enum Cmd {
         #[arg(long = "enemy-cover", value_enum)]
         enemy_cover: Option<CoverArg>,
 
+        /// Force the actor to use a special action instead of a normal attack (one per turn).
+        /// Options: "grapple", "shove-prone"
+        #[arg(long = "actor-action")]
+        actor_action: Option<String>,
+
+        /// Force the enemy to use a special action. Options: "grapple", "shove-prone"
+        #[arg(long = "enemy-action")]
+        enemy_action: Option<String>,
+
         /// Optional actor JSON (else sample fighter)
         #[arg(long)]
         file: Option<PathBuf>,
@@ -570,6 +582,15 @@ enum Cmd {
         /// Cover applied to all enemies (overrides encounter file)
         #[arg(long = "enemy-cover", value_enum)]
         enemy_cover: Option<CoverArg>,
+
+        /// Force the actor to use a special action instead of a normal attack (one per turn).
+        /// Options: "grapple", "shove-prone"
+        #[arg(long = "actor-action")]
+        actor_action: Option<String>,
+
+        /// Force enemies to use a special action. Options: "grapple", "shove-prone"
+        #[arg(long = "enemy-action")]
+        enemy_action: Option<String>,
 
         /// Optional actor JSON
         #[arg(long)]
@@ -886,6 +907,8 @@ fn main() -> anyhow::Result<()> {
             adv,
             actor_cover: actor_cover_opt,
             enemy_cover: enemy_cover_opt,
+            actor_action,
+            enemy_action,
             file,
         } => {
             let actor = if let Some(path) = file {
@@ -900,6 +923,10 @@ fn main() -> anyhow::Result<()> {
                 .map(|c| c.into_cover())
                 .unwrap_or(Cover::None);
             let enemy_cover = enemy_cover_opt.map(|c| c.into_cover()).unwrap_or(tgt.cover);
+            let actor_str_mod = actor.ability_mod(Ability::Str);
+            let actor_dex_mod = actor.ability_mod(Ability::Dex);
+            let enemy_str_mod = tgt.ability_mod(Ability::Str);
+            let enemy_dex_mod = tgt.ability_mod(Ability::Dex);
             let resist: HashSet<_> = tgt
                 .resistances
                 .iter()
@@ -1023,56 +1050,98 @@ fn main() -> anyhow::Result<()> {
                             println!("[TURN][Actor] is unconscious. Skipping actions.");
                         }
                         LifeState::Conscious => {
-                            let style = if resolved.ranged {
-                                AttackStyle::Ranged
-                            } else {
-                                AttackStyle::Melee
+                            let mut perform_attack = || {
+                                let style = if resolved.ranged {
+                                    AttackStyle::Ranged
+                                } else {
+                                    AttackStyle::Melee
+                                };
+                                let base_vantage: Vantage = actor_mode.into();
+                                let cond_vantage = vantage_from_conditions(
+                                    &actor_conditions,
+                                    &enemy_conditions,
+                                    style,
+                                );
+                                let final_mode: AdMode = base_vantage.combine(cond_vantage).into();
+                                let enemy_effective_ac = tgt.ac + enemy_cover.ac_bonus();
+                                log_defense(&tgt.name, tgt.ac, enemy_cover);
+                                let atk = engine::attack(
+                                    &mut rng,
+                                    final_mode,
+                                    actor_atk_bonus,
+                                    enemy_effective_ac,
+                                );
+                                log_attack_event("Actor", &atk);
+                                if atk.hit {
+                                    let is_crit = atk.is_crit;
+                                    let raw =
+                                        engine::damage(&mut rng, actor_dd, actor_dmg_mod, is_crit);
+                                    log_damage_event(
+                                        "Actor",
+                                        actor_dd,
+                                        actor_dmg_mod,
+                                        is_crit,
+                                        raw,
+                                        Some(actor_dtype),
+                                    );
+                                    let adj = engine::adjust_damage_by_type(
+                                        raw,
+                                        actor_dtype,
+                                        &resist,
+                                        &vuln,
+                                        &immune,
+                                    );
+                                    if adj != raw {
+                                        println!(
+                                            "[DMG][Actor] adjusted for resistances/vulnerabilities => {}",
+                                            adj
+                                        );
+                                    }
+                                    cur_tgt_hp = (cur_tgt_hp - adj).max(0);
+                                    println!("[HP][{}] {} HP remaining", tgt.name, cur_tgt_hp);
+                                } else {
+                                    println!("[HP][{}] {} HP remaining", tgt.name, cur_tgt_hp);
+                                }
                             };
-                            let base_vantage: Vantage = actor_mode.into();
-                            let cond_vantage = vantage_from_conditions(
-                                &actor_conditions,
-                                &enemy_conditions,
-                                style,
-                            );
-                            let final_mode: AdMode = base_vantage.combine(cond_vantage).into();
-                            let enemy_effective_ac = tgt.ac + enemy_cover.ac_bonus();
-                            log_defense(&tgt.name, tgt.ac, enemy_cover);
-                            let atk = engine::attack(
-                                &mut rng,
-                                final_mode,
-                                actor_atk_bonus,
-                                enemy_effective_ac,
-                            );
-                            log_attack_event("Actor", &atk);
-                            if atk.hit {
-                                let is_crit = atk.is_crit;
-                                let raw =
-                                    engine::damage(&mut rng, actor_dd, actor_dmg_mod, is_crit);
-                                log_damage_event(
-                                    "Actor",
-                                    actor_dd,
-                                    actor_dmg_mod,
-                                    is_crit,
-                                    raw,
-                                    Some(actor_dtype),
-                                );
-                                let adj = engine::adjust_damage_by_type(
-                                    raw,
-                                    actor_dtype,
-                                    &resist,
-                                    &vuln,
-                                    &immune,
-                                );
-                                if adj != raw {
-                                    println!(
-                                        "[DMG][Actor] adjusted for resistances/vulnerabilities => {}",
-                                        adj
+
+                            match actor_action.as_deref() {
+                                Some("grapple") => {
+                                    println!("[ACTION][Actor] attempts to grapple {}", tgt.name);
+                                    attempt_grapple(
+                                        "Actor",
+                                        actor_str_mod,
+                                        &tgt.name,
+                                        enemy_str_mod,
+                                        enemy_dex_mod,
+                                        &mut enemy_conditions,
+                                        || rng.d20(AdMode::Normal) as i32,
+                                        |msg| println!("{}", msg),
                                     );
                                 }
-                                cur_tgt_hp = (cur_tgt_hp - adj).max(0);
-                                println!("[HP][{}] {} HP remaining", tgt.name, cur_tgt_hp);
-                            } else {
-                                println!("[HP][{}] {} HP remaining", tgt.name, cur_tgt_hp);
+                                Some("shove-prone") => {
+                                    println!(
+                                        "[ACTION][Actor] attempts to shove {} prone",
+                                        tgt.name
+                                    );
+                                    attempt_shove_prone(
+                                        "Actor",
+                                        actor_str_mod,
+                                        &tgt.name,
+                                        enemy_str_mod,
+                                        enemy_dex_mod,
+                                        &mut enemy_conditions,
+                                        || rng.d20(AdMode::Normal) as i32,
+                                        |msg| println!("{}", msg),
+                                    );
+                                }
+                                Some(other) => {
+                                    println!(
+                                        "[WARN] Unknown actor-action '{}'; defaulting to attack",
+                                        other
+                                    );
+                                    perform_attack();
+                                }
+                                None => perform_attack(),
                             }
                         }
                     }
@@ -1088,6 +1157,16 @@ fn main() -> anyhow::Result<()> {
                         },
                         |msg| println!("{}", msg),
                     );
+
+                    attempt_escape_grapple_end_of_turn(
+                        "Actor",
+                        actor_str_mod,
+                        actor_dex_mod,
+                        enemy_str_mod,
+                        &mut actor_conditions,
+                        || rng.d20(AdMode::Normal) as i32,
+                        |msg| println!("{}", msg),
+                    );
                 } else {
                     process_turn_boundary(
                         TurnBoundary::StartOfTurn,
@@ -1101,61 +1180,104 @@ fn main() -> anyhow::Result<()> {
                         |msg| println!("{}", msg),
                     );
 
-                    let style = if tgt_attack.ranged {
-                        AttackStyle::Ranged
-                    } else {
-                        AttackStyle::Melee
-                    };
-                    let base_vantage = Vantage::Normal;
-                    let cond_vantage =
-                        vantage_from_conditions(&enemy_conditions, &actor_conditions, style);
-                    let final_mode: AdMode = base_vantage.combine(cond_vantage).into();
-                    println!("[ACTION][{}] uses {}", tgt.name, tgt_attack.name);
-                    let enemy_label = format!("{} ({})", tgt.name, tgt_attack.name);
-                    let effective_actor_ac = actor_ac + actor_cover.ac_bonus();
-                    log_defense("Actor", actor_ac, actor_cover);
-                    let atk =
-                        engine::attack(&mut rng, final_mode, tgt_attack.to_hit, effective_actor_ac);
-                    log_attack_event(&enemy_label, &atk);
-                    if atk.hit {
-                        let is_crit = atk.is_crit;
-                        let dmg = engine::damage(&mut rng, tgt_attack.dice, 0, is_crit);
-                        log_damage_event(
-                            &enemy_label,
-                            tgt_attack.dice,
-                            0,
-                            is_crit,
-                            dmg,
-                            Some(tgt_dtype),
+                    let mut perform_enemy_attack = || {
+                        let style = if tgt_attack.ranged {
+                            AttackStyle::Ranged
+                        } else {
+                            AttackStyle::Melee
+                        };
+                        let base_vantage = Vantage::Normal;
+                        let cond_vantage =
+                            vantage_from_conditions(&enemy_conditions, &actor_conditions, style);
+                        let final_mode: AdMode = base_vantage.combine(cond_vantage).into();
+                        println!("[ACTION][{}] uses {}", tgt.name, tgt_attack.name);
+                        let enemy_label = format!("{} ({})", tgt.name, tgt_attack.name);
+                        let effective_actor_ac = actor_ac + actor_cover.ac_bonus();
+                        log_defense("Actor", actor_ac, actor_cover);
+                        let atk = engine::attack(
+                            &mut rng,
+                            final_mode,
+                            tgt_attack.to_hit,
+                            effective_actor_ac,
                         );
-                        let dropped = apply_damage(
-                            "Actor",
-                            &mut actor_health,
-                            &mut actor_conditions,
-                            dmg,
-                            |msg| println!("{}", msg),
-                        );
-                        println!("[HP][Actor] {} HP remaining", actor_health.hp);
-                        if dropped && auto_potion_left {
-                            heal("Actor", &mut actor_health, 7, |msg| println!("{}", msg));
-                            auto_potion_left = false;
-                            println!("[ITEM][Actor] Auto-potion consumed (2d4+2 ~ 7)");
-                        }
-                        if let Some(spec) = tgt_attack.apply_condition.as_ref() {
-                            maybe_apply_on_hit_condition(
+                        log_attack_event(&enemy_label, &atk);
+                        if atk.hit {
+                            let is_crit = atk.is_crit;
+                            let dmg = engine::damage(&mut rng, tgt_attack.dice, 0, is_crit);
+                            log_damage_event(
+                                &enemy_label,
+                                tgt_attack.dice,
+                                0,
+                                is_crit,
+                                dmg,
+                                Some(tgt_dtype),
+                            );
+                            let dropped = apply_damage(
                                 "Actor",
+                                &mut actor_health,
                                 &mut actor_conditions,
-                                spec,
-                                |ability, _dc| {
-                                    let roll = rng.d20(AdMode::Normal) as i32;
-                                    let total = roll + actor.save_mod(ability);
-                                    (roll, total)
-                                },
+                                dmg,
+                                |msg| println!("{}", msg),
+                            );
+                            println!("[HP][Actor] {} HP remaining", actor_health.hp);
+                            if dropped && auto_potion_left {
+                                heal("Actor", &mut actor_health, 7, |msg| println!("{}", msg));
+                                auto_potion_left = false;
+                                println!("[ITEM][Actor] Auto-potion consumed (2d4+2 ~ 7)");
+                            }
+                            if let Some(spec) = tgt_attack.apply_condition.as_ref() {
+                                maybe_apply_on_hit_condition(
+                                    "Actor",
+                                    &mut actor_conditions,
+                                    spec,
+                                    |ability, _dc| {
+                                        let roll = rng.d20(AdMode::Normal) as i32;
+                                        let total = roll + actor.save_mod(ability);
+                                        (roll, total)
+                                    },
+                                    |msg| println!("{}", msg),
+                                );
+                            }
+                        } else {
+                            println!("[HP][Actor] {} HP remaining", actor_health.hp);
+                        }
+                    };
+
+                    match enemy_action.as_deref() {
+                        Some("grapple") => {
+                            println!("[ACTION][{}] attempts to grapple Actor", tgt.name);
+                            attempt_grapple(
+                                &tgt.name,
+                                enemy_str_mod,
+                                "Actor",
+                                actor_str_mod,
+                                actor_dex_mod,
+                                &mut actor_conditions,
+                                || rng.d20(AdMode::Normal) as i32,
                                 |msg| println!("{}", msg),
                             );
                         }
-                    } else {
-                        println!("[HP][Actor] {} HP remaining", actor_health.hp);
+                        Some("shove-prone") => {
+                            println!("[ACTION][{}] attempts to shove Actor prone", tgt.name);
+                            attempt_shove_prone(
+                                &tgt.name,
+                                enemy_str_mod,
+                                "Actor",
+                                actor_str_mod,
+                                actor_dex_mod,
+                                &mut actor_conditions,
+                                || rng.d20(AdMode::Normal) as i32,
+                                |msg| println!("{}", msg),
+                            );
+                        }
+                        Some(other) => {
+                            println!(
+                                "[WARN] Unknown enemy-action '{}'; defaulting to attack",
+                                other
+                            );
+                            perform_enemy_attack();
+                        }
+                        None => perform_enemy_attack(),
                     }
 
                     process_turn_boundary(
@@ -1167,6 +1289,16 @@ fn main() -> anyhow::Result<()> {
                             let total = roll + tgt.ability_mod(ability);
                             (roll, total)
                         },
+                        |msg| println!("{}", msg),
+                    );
+
+                    attempt_escape_grapple_end_of_turn(
+                        &tgt.name,
+                        enemy_str_mod,
+                        enemy_dex_mod,
+                        actor_str_mod,
+                        &mut enemy_conditions,
+                        || rng.d20(AdMode::Normal) as i32,
                         |msg| println!("{}", msg),
                     );
                 }
@@ -1225,6 +1357,8 @@ fn main() -> anyhow::Result<()> {
             adv,
             actor_cover: actor_cover_opt,
             enemy_cover: enemy_cover_opt,
+            actor_action,
+            enemy_action,
             file,
         } => {
             let actor = if let Some(path) = file {
@@ -1262,6 +1396,7 @@ fn main() -> anyhow::Result<()> {
 
             let mut rng = Dice::from_seed(seed);
             let mode = to_mode(adv);
+            let actor_str_mod = actor.ability_mod(Ability::Str);
             let actor_dex_mod = actor.ability_mod(Ability::Dex);
 
             let mut focus_strategy = focus.to_lowercase();
@@ -1275,6 +1410,7 @@ fn main() -> anyhow::Result<()> {
                 ac: i32,
                 hp: i32,
                 cover: Cover,
+                str_mod: i32,
                 dex_mod: i32,
                 abilities: Option<AbilityScores>,
                 attacks: Vec<TargetAttack>,
@@ -1310,13 +1446,23 @@ fn main() -> anyhow::Result<()> {
                         log(msg);
                     });
                     let cover = override_cover.unwrap_or_else(|| e.cover.unwrap_or(Cover::None));
+                    let abilities = e.abilities.clone();
+                    let dex_mod = abilities
+                        .as_ref()
+                        .map(|scores| scores.mod_of(Ability::Dex))
+                        .unwrap_or(e.dex_mod);
+                    let str_mod = abilities
+                        .as_ref()
+                        .map(|scores| scores.mod_of(Ability::Str))
+                        .unwrap_or(0);
                     EnemyState {
                         name: e.name,
                         ac: e.ac,
                         hp: e.hp,
                         cover,
-                        dex_mod: e.dex_mod,
-                        abilities: e.abilities,
+                        str_mod,
+                        dex_mod,
+                        abilities,
                         attacks: e.attacks,
                         resist,
                         vuln,
@@ -1510,66 +1656,111 @@ fn main() -> anyhow::Result<()> {
                                     {
                                         let enemy = &mut enemies[target_idx];
                                         if enemy.hp > 0 {
-                                            let style = if resolved.ranged {
-                                                AttackStyle::Ranged
-                                            } else {
-                                                AttackStyle::Melee
-                                            };
-                                            let base_vantage: Vantage = mode.into();
-                                            let cond_vantage = vantage_from_conditions(
-                                                &actor_conditions,
-                                                &enemy.conditions,
-                                                style,
-                                            );
-                                            let final_mode: AdMode =
-                                                base_vantage.combine(cond_vantage).into();
-                                            let enemy_effective_ac =
-                                                enemy.ac + enemy.cover.ac_bonus();
-                                            println!("[ACTION][Actor] targets {}", enemy.name);
-                                            log_defense(&enemy.name, enemy.ac, enemy.cover);
-                                            let atk = engine::attack(
-                                                &mut rng,
-                                                final_mode,
-                                                attack_bonus,
-                                                enemy_effective_ac,
-                                            );
-                                            log_attack_event("Actor", &atk);
-                                            if atk.hit {
-                                                let is_crit = atk.is_crit;
-                                                let raw = engine::damage(
-                                                    &mut rng, dmg_spec, damage_mod, is_crit,
+                                            let mut perform_attack = |enemy: &mut EnemyState| {
+                                                let style = if resolved.ranged {
+                                                    AttackStyle::Ranged
+                                                } else {
+                                                    AttackStyle::Melee
+                                                };
+                                                let base_vantage: Vantage = mode.into();
+                                                let cond_vantage = vantage_from_conditions(
+                                                    &actor_conditions,
+                                                    &enemy.conditions,
+                                                    style,
                                                 );
-                                                log_damage_event(
-                                                    "Actor",
-                                                    dmg_spec,
-                                                    damage_mod,
-                                                    is_crit,
-                                                    raw,
-                                                    Some(dtype),
+                                                let final_mode: AdMode =
+                                                    base_vantage.combine(cond_vantage).into();
+                                                let enemy_effective_ac =
+                                                    enemy.ac + enemy.cover.ac_bonus();
+                                                println!("[ACTION][Actor] targets {}", enemy.name);
+                                                log_defense(&enemy.name, enemy.ac, enemy.cover);
+                                                let atk = engine::attack(
+                                                    &mut rng,
+                                                    final_mode,
+                                                    attack_bonus,
+                                                    enemy_effective_ac,
                                                 );
-                                                let dmg = engine::adjust_damage_by_type(
-                                                    raw,
-                                                    dtype,
-                                                    &enemy.resist,
-                                                    &enemy.vuln,
-                                                    &enemy.immune,
-                                                );
-                                                if dmg != raw {
+                                                log_attack_event("Actor", &atk);
+                                                if atk.hit {
+                                                    let is_crit = atk.is_crit;
+                                                    let raw = engine::damage(
+                                                        &mut rng, dmg_spec, damage_mod, is_crit,
+                                                    );
+                                                    log_damage_event(
+                                                        "Actor",
+                                                        dmg_spec,
+                                                        damage_mod,
+                                                        is_crit,
+                                                        raw,
+                                                        Some(dtype),
+                                                    );
+                                                    let dmg = engine::adjust_damage_by_type(
+                                                        raw,
+                                                        dtype,
+                                                        &enemy.resist,
+                                                        &enemy.vuln,
+                                                        &enemy.immune,
+                                                    );
+                                                    if dmg != raw {
+                                                        println!(
+                                                            "[DMG][Actor] adjusted for resistances/vulnerabilities => {}",
+                                                            dmg
+                                                        );
+                                                    }
+                                                    enemy.hp = (enemy.hp - dmg).max(0);
                                                     println!(
-                                                        "[DMG][Actor] adjusted for resistances/vulnerabilities => {}",
-                                                        dmg
+                                                        "[HP][{}] {} HP remaining",
+                                                        enemy.name, enemy.hp
+                                                    );
+                                                } else {
+                                                    println!(
+                                                        "[HP][{}] {} HP remaining",
+                                                        enemy.name, enemy.hp
                                                     );
                                                 }
-                                                enemy.hp = (enemy.hp - dmg).max(0);
-                                                println!(
-                                                    "[HP][{}] {} HP remaining",
-                                                    enemy.name, enemy.hp
-                                                );
-                                            } else {
-                                                println!(
-                                                    "[HP][{}] {} HP remaining",
-                                                    enemy.name, enemy.hp
-                                                );
+                                            };
+
+                                            match actor_action.as_deref() {
+                                                Some("grapple") => {
+                                                    println!(
+                                                        "[ACTION][Actor] attempts to grapple {}",
+                                                        enemy.name
+                                                    );
+                                                    attempt_grapple(
+                                                        "Actor",
+                                                        actor_str_mod,
+                                                        &enemy.name,
+                                                        enemy.str_mod,
+                                                        enemy.dex_mod,
+                                                        &mut enemy.conditions,
+                                                        || rng.d20(AdMode::Normal) as i32,
+                                                        |msg| println!("{}", msg),
+                                                    );
+                                                }
+                                                Some("shove-prone") => {
+                                                    println!(
+                                                        "[ACTION][Actor] attempts to shove {} prone",
+                                                        enemy.name
+                                                    );
+                                                    attempt_shove_prone(
+                                                        "Actor",
+                                                        actor_str_mod,
+                                                        &enemy.name,
+                                                        enemy.str_mod,
+                                                        enemy.dex_mod,
+                                                        &mut enemy.conditions,
+                                                        || rng.d20(AdMode::Normal) as i32,
+                                                        |msg| println!("{}", msg),
+                                                    );
+                                                }
+                                                Some(other) => {
+                                                    println!(
+                                                        "[WARN] Unknown actor-action '{}'; defaulting to attack",
+                                                        other
+                                                    );
+                                                    perform_attack(enemy);
+                                                }
+                                                None => perform_attack(enemy),
                                             }
                                         }
                                     }
@@ -1587,6 +1778,21 @@ fn main() -> anyhow::Result<()> {
                                 },
                                 |msg| println!("{}", msg),
                             );
+
+                            let grappler_str_mod = enemies
+                                .iter()
+                                .find(|e| e.hp > 0)
+                                .map(|e| e.str_mod)
+                                .unwrap_or(0);
+                            attempt_escape_grapple_end_of_turn(
+                                "Actor",
+                                actor_str_mod,
+                                actor_dex_mod,
+                                grappler_str_mod,
+                                &mut actor_conditions,
+                                || rng.d20(AdMode::Normal) as i32,
+                                |msg| println!("{}", msg),
+                            );
                         }
                         _ => {
                             if let Some(enemy) = enemies.get_mut(entry.index) {
@@ -1596,6 +1802,7 @@ fn main() -> anyhow::Result<()> {
 
                                 let abilities_ref = enemy.abilities.clone();
                                 let dex_mod = enemy.dex_mod;
+                                let str_mod = enemy.str_mod;
                                 process_turn_boundary(
                                     TurnBoundary::StartOfTurn,
                                     &enemy.name,
@@ -1605,12 +1812,10 @@ fn main() -> anyhow::Result<()> {
                                         let modifier = abilities_ref
                                             .as_ref()
                                             .map(|scores| scores.mod_of(ability))
-                                            .unwrap_or_else(|| {
-                                                if ability == Ability::Dex {
-                                                    dex_mod
-                                                } else {
-                                                    0
-                                                }
+                                            .unwrap_or_else(|| match ability {
+                                                Ability::Dex => dex_mod,
+                                                Ability::Str => str_mod,
+                                                _ => 0,
                                             });
                                         let total = roll + modifier;
                                         (roll, total)
@@ -1618,79 +1823,133 @@ fn main() -> anyhow::Result<()> {
                                     |msg| println!("{}", msg),
                                 );
 
-                                if let Some(attack) = enemy.attacks.first() {
-                                    let style = if attack.ranged {
-                                        AttackStyle::Ranged
-                                    } else {
-                                        AttackStyle::Melee
-                                    };
-                                    let base_vantage = Vantage::Normal;
-                                    let cond_vantage = vantage_from_conditions(
-                                        &enemy.conditions,
-                                        &actor_conditions,
-                                        style,
-                                    );
-                                    let final_mode: AdMode =
-                                        base_vantage.combine(cond_vantage).into();
-                                    println!("[ACTION][{}] uses {}", enemy.name, attack.name);
-                                    let enemy_label = format!("{} ({})", enemy.name, attack.name);
-                                    let effective_actor_ac = actor_ac + actor_cover.ac_bonus();
-                                    log_defense("Actor", actor_ac, actor_cover);
-                                    let atk = engine::attack(
-                                        &mut rng,
-                                        final_mode,
-                                        attack.to_hit,
-                                        effective_actor_ac,
-                                    );
-                                    log_attack_event(&enemy_label, &atk);
-                                    if atk.hit {
-                                        let is_crit = atk.is_crit;
-                                        let dmg = engine::damage(&mut rng, attack.dice, 0, is_crit);
-                                        log_damage_event(
-                                            &enemy_label,
-                                            attack.dice,
-                                            0,
-                                            is_crit,
-                                            dmg,
-                                            attack.damage_type,
+                                if let Some(attack) = enemy.attacks.first().cloned() {
+                                    let mut perform_enemy_attack = |enemy: &mut EnemyState| {
+                                        let style = if attack.ranged {
+                                            AttackStyle::Ranged
+                                        } else {
+                                            AttackStyle::Melee
+                                        };
+                                        let base_vantage = Vantage::Normal;
+                                        let cond_vantage = vantage_from_conditions(
+                                            &enemy.conditions,
+                                            &actor_conditions,
+                                            style,
                                         );
-                                        let dropped = apply_damage(
-                                            "Actor",
-                                            &mut actor_health,
-                                            &mut actor_conditions,
-                                            dmg,
-                                            |msg| println!("{}", msg),
+                                        let final_mode: AdMode =
+                                            base_vantage.combine(cond_vantage).into();
+                                        println!("[ACTION][{}] uses {}", enemy.name, attack.name);
+                                        let enemy_label =
+                                            format!("{} ({})", enemy.name, attack.name);
+                                        let effective_actor_ac = actor_ac + actor_cover.ac_bonus();
+                                        log_defense("Actor", actor_ac, actor_cover);
+                                        let atk = engine::attack(
+                                            &mut rng,
+                                            final_mode,
+                                            attack.to_hit,
+                                            effective_actor_ac,
                                         );
-                                        println!("[HP][Actor] {} HP remaining", actor_health.hp);
-                                        if dropped && auto_potion_left {
-                                            heal("Actor", &mut actor_health, 7, |msg| {
-                                                println!("{}", msg)
-                                            });
-                                            auto_potion_left = false;
+                                        log_attack_event(&enemy_label, &atk);
+                                        if atk.hit {
+                                            let is_crit = atk.is_crit;
+                                            let dmg =
+                                                engine::damage(&mut rng, attack.dice, 0, is_crit);
+                                            log_damage_event(
+                                                &enemy_label,
+                                                attack.dice,
+                                                0,
+                                                is_crit,
+                                                dmg,
+                                                attack.damage_type,
+                                            );
+                                            let dropped = apply_damage(
+                                                "Actor",
+                                                &mut actor_health,
+                                                &mut actor_conditions,
+                                                dmg,
+                                                |msg| println!("{}", msg),
+                                            );
                                             println!(
-                                                "[ITEM][Actor] Auto-potion consumed (2d4+2 ~ 7)"
+                                                "[HP][Actor] {} HP remaining",
+                                                actor_health.hp
+                                            );
+                                            if dropped && auto_potion_left {
+                                                heal("Actor", &mut actor_health, 7, |msg| {
+                                                    println!("{}", msg)
+                                                });
+                                                auto_potion_left = false;
+                                                println!(
+                                                    "[ITEM][Actor] Auto-potion consumed (2d4+2 ~ 7)"
+                                                );
+                                            }
+                                            if let Some(spec) = attack.apply_condition.as_ref() {
+                                                maybe_apply_on_hit_condition(
+                                                    "Actor",
+                                                    &mut actor_conditions,
+                                                    spec,
+                                                    |ability, _dc| {
+                                                        let roll = rng.d20(AdMode::Normal) as i32;
+                                                        let total = roll + actor.save_mod(ability);
+                                                        (roll, total)
+                                                    },
+                                                    |msg| println!("{}", msg),
+                                                );
+                                            }
+                                        } else {
+                                            println!(
+                                                "[HP][Actor] {} HP remaining",
+                                                actor_health.hp
                                             );
                                         }
-                                        if let Some(spec) = attack.apply_condition.as_ref() {
-                                            maybe_apply_on_hit_condition(
+                                    };
+
+                                    match enemy_action.as_deref() {
+                                        Some("grapple") => {
+                                            println!(
+                                                "[ACTION][{}] attempts to grapple Actor",
+                                                enemy.name
+                                            );
+                                            attempt_grapple(
+                                                &enemy.name,
+                                                enemy.str_mod,
                                                 "Actor",
+                                                actor_str_mod,
+                                                actor_dex_mod,
                                                 &mut actor_conditions,
-                                                spec,
-                                                |ability, _dc| {
-                                                    let roll = rng.d20(AdMode::Normal) as i32;
-                                                    let total = roll + actor.save_mod(ability);
-                                                    (roll, total)
-                                                },
+                                                || rng.d20(AdMode::Normal) as i32,
                                                 |msg| println!("{}", msg),
                                             );
                                         }
-                                    } else {
-                                        println!("[HP][Actor] {} HP remaining", actor_health.hp);
+                                        Some("shove-prone") => {
+                                            println!(
+                                                "[ACTION][{}] attempts to shove Actor prone",
+                                                enemy.name
+                                            );
+                                            attempt_shove_prone(
+                                                &enemy.name,
+                                                enemy.str_mod,
+                                                "Actor",
+                                                actor_str_mod,
+                                                actor_dex_mod,
+                                                &mut actor_conditions,
+                                                || rng.d20(AdMode::Normal) as i32,
+                                                |msg| println!("{}", msg),
+                                            );
+                                        }
+                                        Some(other) => {
+                                            println!(
+                                                "[WARN] Unknown enemy-action '{}'; defaulting to attack",
+                                                other
+                                            );
+                                            perform_enemy_attack(enemy);
+                                        }
+                                        None => perform_enemy_attack(enemy),
                                     }
                                 }
 
                                 let abilities_ref_end = enemy.abilities.clone();
                                 let dex_mod_end = enemy.dex_mod;
+                                let str_mod_end = enemy.str_mod;
                                 process_turn_boundary(
                                     TurnBoundary::EndOfTurn,
                                     &enemy.name,
@@ -1700,16 +1959,24 @@ fn main() -> anyhow::Result<()> {
                                         let modifier = abilities_ref_end
                                             .as_ref()
                                             .map(|scores| scores.mod_of(ability))
-                                            .unwrap_or_else(|| {
-                                                if ability == Ability::Dex {
-                                                    dex_mod_end
-                                                } else {
-                                                    0
-                                                }
+                                            .unwrap_or_else(|| match ability {
+                                                Ability::Dex => dex_mod_end,
+                                                Ability::Str => str_mod_end,
+                                                _ => 0,
                                             });
                                         let total = roll + modifier;
                                         (roll, total)
                                     },
+                                    |msg| println!("{}", msg),
+                                );
+
+                                attempt_escape_grapple_end_of_turn(
+                                    &enemy.name,
+                                    enemy.str_mod,
+                                    enemy.dex_mod,
+                                    actor_str_mod,
+                                    &mut enemy.conditions,
+                                    || rng.d20(AdMode::Normal) as i32,
                                     |msg| println!("{}", msg),
                                 );
                             }
