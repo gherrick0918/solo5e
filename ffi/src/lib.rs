@@ -1,5 +1,6 @@
+use engine::api::{simulate_duel, DuelConfig};
 use jni::objects::{JClass, JString};
-use jni::sys::{jint, jlong};
+use jni::sys::{jint, jlong, jstring};
 use jni::JNIEnv;
 
 #[no_mangle]
@@ -44,6 +45,37 @@ pub extern "system" fn Java_com_solo5e_Ffi_echoJsonLen<'local>(
 ) -> jint {
     let s: String = env.get_string(&json).expect("get_string").into();
     s.len() as jint
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_solo5e_Ffi_simulateDuelJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    json: JString,
+) -> jstring {
+    let input: String = match env.get_string(&json) {
+        Ok(s) => s.into(),
+        Err(e) => {
+            return env
+                .new_string(format!(r#"{{"ok":false,"error":"{}"}}"#, e))
+                .unwrap()
+                .into_raw()
+        }
+    };
+    let cfg: DuelConfig = match serde_json::from_str(&input) {
+        Ok(c) => c,
+        Err(e) => {
+            return env
+                .new_string(format!(r#"{{"ok":false,"error":"invalid_config: {}"}}"#, e))
+                .unwrap()
+                .into_raw()
+        }
+    };
+    let result = match simulate_duel(cfg) {
+        Ok(r) => serde_json::to_string(&serde_json::json!({ "ok": true, "result": r })).unwrap(),
+        Err(e) => format!(r#"{{"ok":false,"error":"{}"}}"#, e),
+    };
+    env.new_string(result).unwrap().into_raw()
 }
 
 // Internal functions for testing without JNI overhead
