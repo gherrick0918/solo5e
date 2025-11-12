@@ -3,6 +3,7 @@ use rand_chacha::ChaCha8Rng;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
+pub mod api;
 pub mod conditions;
 pub mod life;
 

@@ -5,4 +5,5 @@ object Ffi {
     external fun version(): String
     external fun roll(seed: Long, n: Int, sides: Int): Int
     external fun echoJsonLen(json: String): Int
+    external fun simulateDuelJson(json: String): String
 }
