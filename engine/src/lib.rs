@@ -5,6 +5,7 @@ use std::collections::HashSet;
 
 pub mod api;
 pub mod conditions;
+pub mod content;
 pub mod life;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

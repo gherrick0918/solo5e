@@ -1,6 +1,7 @@
-use std::{collections::HashSet, fs};
+use std::collections::{HashMap, HashSet};
+use std::fs;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::conditions::{
@@ -17,9 +18,15 @@ const MAX_ROUNDS: u32 = 30;
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct DuelConfig {
-    pub target_path: String,
+    #[serde(default)]
+    pub target_path: Option<String>,
+    #[serde(default)]
+    pub weapons_path: Option<String>,
+    #[serde(default)]
+    pub target_id: Option<String>,
+    #[serde(default)]
+    pub weapons_id: Option<String>,
     pub weapon: String,
-    pub weapons_path: String,
     #[serde(default)]
     pub actor_conditions: Vec<String>,
     #[serde(default)]
@@ -37,6 +44,40 @@ pub struct DuelResult {
     pub rounds: u32,
     pub actor_hp_end: i32,
     pub enemy_hp_end: i32,
+    pub log: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub struct DuelStats {
+    pub samples: u32,
+    pub actor_wins: u32,
+    pub enemy_wins: u32,
+    pub draws: u32,
+    pub avg_rounds: f32,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct EncounterConfig {
+    #[serde(default)]
+    pub encounter_path: Option<String>,
+    #[serde(default)]
+    pub encounter_id: Option<String>,
+    #[serde(default)]
+    pub seed: u64,
+    #[serde(default)]
+    pub actor_hp: Option<i32>,
+    #[serde(default)]
+    pub actor_conditions: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub struct EncounterResult {
+    pub survived: bool,
+    pub rounds: u32,
+    pub remaining_enemies: u32,
     pub log: Vec<String>,
 }
 
@@ -97,19 +138,64 @@ impl TargetData {
     }
 }
 
-pub fn simulate_duel(cfg: DuelConfig) -> Result<DuelResult> {
-    let mut logs = Vec::new();
+#[derive(Debug, Clone, Deserialize)]
+struct EncounterData {
+    #[serde(default)]
+    name: String,
+    enemies: Vec<TargetData>,
+}
 
-    let target = load_target(&cfg.target_path)?;
+fn load_json_from_path_or_builtin(
+    path: &Option<String>,
+    id: &Option<String>,
+    map: &HashMap<&'static str, &'static str>,
+) -> Result<String> {
+    if let Some(p) = path {
+        match fs::read_to_string(p) {
+            Ok(s) => return Ok(s),
+            Err(e) => {
+                if id.is_none() {
+                    return Err(anyhow!("{}", e).context(format!("failed to read JSON from {}", p)));
+                }
+            }
+        }
+    }
+
+    if let Some(i) = id {
+        if let Some(&text) = map.get(i.as_str()) {
+            return Ok(text.to_string());
+        } else if path.is_none() {
+            bail!("built-in id '{}' not found", i);
+        }
+    }
+
+    if let Some(p) = path {
+        bail!("failed to load content from path {}", p);
+    }
+
+    bail!("no content found (path or built-in id required)")
+}
+
+pub fn simulate_duel(cfg: DuelConfig) -> Result<DuelResult> {
+    let target_json = {
+        let builtins = crate::content::builtin_targets();
+        load_json_from_path_or_builtin(&cfg.target_path, &cfg.target_id, &builtins)?
+    };
+    let weapons_json = {
+        let builtins = crate::content::builtin_weapons();
+        load_json_from_path_or_builtin(&cfg.weapons_path, &cfg.weapons_id, &builtins)?
+    };
+
+    let target = parse_target_json(&target_json)?;
     if target.attacks.is_empty() {
         bail!("target has no attacks");
     }
     let target_attack = target.attacks[0].clone();
 
-    let weapons = load_weapons(&cfg.weapons_path)?;
+    let weapons = parse_weapons_json(&weapons_json)?;
     let weapon = find_weapon(&weapons, &cfg.weapon)
         .cloned()
-        .ok_or_else(|| anyhow::anyhow!("weapon '{}' not found", cfg.weapon))?;
+        .ok_or_else(|| anyhow!("weapon '{}' not found", cfg.weapon))?;
 
     let actor = sample_fighter();
     let actor_hp = cfg.actor_hp.unwrap_or(DEFAULT_ACTOR_HP);
@@ -135,6 +221,7 @@ pub fn simulate_duel(cfg: DuelConfig) -> Result<DuelResult> {
     let actor_damage_mod = actor.damage_mod(actor_ability);
     let actor_mode: Vantage = AdMode::Normal.into();
 
+    let mut logs = Vec::new();
     let mut actor_conditions: Vec<ActiveCondition> = Vec::new();
     for cond in parse_condition_list(&cfg.actor_conditions) {
         logs.push(format!("[COND][Actor] starts with {:?}", cond.kind));
@@ -144,13 +231,7 @@ pub fn simulate_duel(cfg: DuelConfig) -> Result<DuelResult> {
     let mut enemy_conditions: Vec<ActiveCondition> = Vec::new();
     for cond in target.conditions.iter().cloned() {
         logs.push(format!("[COND][{}] starts with {:?}", target.name, cond));
-        enemy_conditions.push(ActiveCondition {
-            kind: cond,
-            save_ends_each_turn: false,
-            end_phase: None,
-            end_save: None,
-            pending_one_turn: false,
-        });
+        enemy_conditions.push(make_active_condition(cond));
     }
     for cond in parse_condition_list(&cfg.enemy_conditions) {
         logs.push(format!(
@@ -397,20 +478,311 @@ pub fn simulate_duel(cfg: DuelConfig) -> Result<DuelResult> {
     })
 }
 
-fn load_target(path: &str) -> Result<TargetData> {
-    let text = fs::read_to_string(path)
-        .with_context(|| format!("failed to read target JSON: {}", path))?;
-    let data = serde_json::from_str(&text)
-        .with_context(|| format!("failed to parse target JSON: {}", path))?;
-    Ok(data)
+pub fn simulate_duel_many(cfg: DuelConfig, samples: u32) -> Result<DuelStats> {
+    let mut actor_wins = 0u32;
+    let mut enemy_wins = 0u32;
+    let mut draws = 0u32;
+    let mut sum_rounds = 0u64;
+
+    for i in 0..samples {
+        let mut run = cfg.clone();
+        run.seed = cfg.seed.wrapping_add(i as u64);
+        let out = simulate_duel(run)?;
+        sum_rounds += out.rounds as u64;
+        match out.winner.as_str() {
+            "actor" => actor_wins += 1,
+            "enemy" => enemy_wins += 1,
+            _ => draws += 1,
+        }
+    }
+
+    Ok(DuelStats {
+        samples,
+        actor_wins,
+        enemy_wins,
+        draws,
+        avg_rounds: (sum_rounds as f32) / samples.max(1) as f32,
+    })
 }
 
-fn load_weapons(path: &str) -> Result<Vec<Weapon>> {
-    let text = fs::read_to_string(path)
-        .with_context(|| format!("failed to read weapons JSON: {}", path))?;
-    let data = serde_json::from_str(&text)
-        .with_context(|| format!("failed to parse weapons JSON: {}", path))?;
-    Ok(data)
+pub fn simulate_encounter(cfg: EncounterConfig) -> Result<EncounterResult> {
+    let encounter_json = {
+        let builtins = crate::content::builtin_encounters();
+        load_json_from_path_or_builtin(&cfg.encounter_path, &cfg.encounter_id, &builtins)?
+    };
+    let encounter: EncounterData =
+        serde_json::from_str(&encounter_json).context("failed to parse encounter JSON")?;
+    if encounter.enemies.is_empty() {
+        bail!("encounter must contain at least one enemy");
+    }
+
+    let weapons_json = {
+        let builtins = crate::content::builtin_weapons();
+        load_json_from_path_or_builtin(&None, &Some("basic".to_string()), &builtins)?
+    };
+    let weapons = parse_weapons_json(&weapons_json)?;
+    let weapon = find_weapon(&weapons, "longsword")
+        .cloned()
+        .ok_or_else(|| anyhow!("failed to find default longsword weapon"))?;
+
+    let actor = sample_fighter();
+    let actor_hp = cfg.actor_hp.unwrap_or(DEFAULT_ACTOR_HP);
+    let actor_ac = DEFAULT_ACTOR_AC;
+    let mut actor_health = Health::new(actor_hp);
+    let mut actor_conditions: Vec<ActiveCondition> = Vec::new();
+    for cond in parse_condition_list(&cfg.actor_conditions) {
+        actor_conditions.push(cond);
+    }
+
+    let actor_weapon_dice = weapon.versatile.unwrap_or(weapon.dice);
+    let actor_damage_type = weapon
+        .damage_type
+        .or_else(|| preset_damage_type(&weapon.name))
+        .unwrap_or(DamageType::Slashing);
+    let actor_style = if weapon.ranged {
+        AttackStyle::Ranged
+    } else {
+        AttackStyle::Melee
+    };
+    let actor_ability = if weapon.ranged || weapon.finesse {
+        Ability::Dex
+    } else {
+        Ability::Str
+    };
+    let actor_attack_bonus = actor.attack_bonus(actor_ability, true);
+    let actor_damage_mod = actor.damage_mod(actor_ability);
+    let actor_mode: Vantage = AdMode::Normal.into();
+
+    let mut rng = Dice::from_seed(cfg.seed);
+    let mut logs = Vec::new();
+    logs.push(format!(
+        "[ENCOUNTER] {} vs {} enemies",
+        encounter.name,
+        encounter.enemies.len()
+    ));
+
+    struct EnemyState {
+        data: TargetData,
+        hp: i32,
+        resist: HashSet<DamageType>,
+        vuln: HashSet<DamageType>,
+        immune: HashSet<DamageType>,
+        conditions: Vec<ActiveCondition>,
+    }
+
+    let mut enemies: Vec<EnemyState> = Vec::new();
+    for target in encounter.enemies.into_iter() {
+        let mut conditions = Vec::new();
+        for cond in target.conditions.iter().cloned() {
+            logs.push(format!("[COND][{}] starts with {:?}", target.name, cond));
+            conditions.push(make_active_condition(cond));
+        }
+        enemies.push(EnemyState {
+            hp: target.hp,
+            resist: collect_damage_types(&target.resistances),
+            vuln: collect_damage_types(&target.vulnerabilities),
+            immune: collect_damage_types(&target.immunities),
+            conditions,
+            data: target,
+        });
+    }
+
+    let mut rounds = 0u32;
+    while rounds < MAX_ROUNDS * 4 {
+        if matches!(actor_health.state, LifeState::Dead) || actor_health.hp <= 0 {
+            break;
+        }
+        if enemies.iter().all(|e| e.hp <= 0) {
+            break;
+        }
+
+        rounds += 1;
+        logs.push(format!("[ROUND] {}", rounds));
+
+        if let Some(outcome) = process_death_save_start_of_turn(
+            "Actor",
+            &mut actor_health,
+            || rng.d20(AdMode::Normal) as i32,
+            |msg| logs.push(msg),
+        ) {
+            logs.push(format!("[TURN][Actor] death save: {}", outcome));
+        }
+
+        process_turn_boundary(
+            TurnBoundary::StartOfTurn,
+            "Actor",
+            &mut actor_conditions,
+            |ability, _dc| {
+                let roll = rng.d20(AdMode::Normal) as i32;
+                let total = roll + actor.save_mod(ability);
+                (roll, total)
+            },
+            |msg| logs.push(msg),
+        );
+
+        if matches!(actor_health.state, LifeState::Conscious) {
+            if let Some(enemy) = enemies.iter_mut().find(|e| e.hp > 0) {
+                let cond_vantage =
+                    vantage_from_conditions(&actor_conditions, &enemy.conditions, actor_style);
+                let final_mode: AdMode = actor_mode.combine(cond_vantage).into();
+                let effective_ac = enemy.data.ac + enemy.data.cover.ac_bonus();
+                log_defense(&mut logs, &enemy.data.name, enemy.data.ac, enemy.data.cover);
+                let atk = crate::attack(&mut rng, final_mode, actor_attack_bonus, effective_ac);
+                log_attack(&mut logs, "Actor", &atk);
+                if atk.hit {
+                    let is_crit = atk.is_crit;
+                    let raw = crate::damage(&mut rng, actor_weapon_dice, actor_damage_mod, is_crit);
+                    let dmg = crate::adjust_damage_by_type(
+                        raw,
+                        actor_damage_type,
+                        &enemy.resist,
+                        &enemy.vuln,
+                        &enemy.immune,
+                    );
+                    let before = enemy.hp;
+                    enemy.hp = (enemy.hp - dmg).max(0);
+                    log_damage(
+                        &mut logs,
+                        "Actor",
+                        actor_weapon_dice,
+                        actor_damage_mod,
+                        is_crit,
+                        dmg,
+                        Some(actor_damage_type),
+                    );
+                    logs.push(format!(
+                        "[HP][{}] {} → {}",
+                        enemy.data.name, before, enemy.hp
+                    ));
+                    if enemy.hp == 0 {
+                        logs.push(format!("[ENEMY] {} defeated", enemy.data.name));
+                    }
+                } else {
+                    logs.push(format!("[HP][{}] {} HP", enemy.data.name, enemy.hp));
+                }
+            }
+        }
+
+        process_turn_boundary(
+            TurnBoundary::EndOfTurn,
+            "Actor",
+            &mut actor_conditions,
+            |ability, _dc| {
+                let roll = rng.d20(AdMode::Normal) as i32;
+                let total = roll + actor.save_mod(ability);
+                (roll, total)
+            },
+            |msg| logs.push(msg),
+        );
+
+        for enemy in enemies.iter_mut() {
+            if enemy.hp <= 0 {
+                continue;
+            }
+
+            let name = enemy.data.name.clone();
+            process_turn_boundary(
+                TurnBoundary::StartOfTurn,
+                &name,
+                &mut enemy.conditions,
+                |ability, _dc| {
+                    let roll = rng.d20(AdMode::Normal) as i32;
+                    let total = roll + enemy.data.ability_mod(ability);
+                    (roll, total)
+                },
+                |msg| logs.push(msg),
+            );
+
+            if enemy.hp > 0 {
+                if let Some(atk_spec) = enemy.data.attacks.first() {
+                    let style = if atk_spec.ranged {
+                        AttackStyle::Ranged
+                    } else {
+                        AttackStyle::Melee
+                    };
+                    let cond_vantage =
+                        vantage_from_conditions(&enemy.conditions, &actor_conditions, style);
+                    let final_mode: AdMode = Vantage::Normal.combine(cond_vantage).into();
+                    log_defense(&mut logs, "Actor", actor_ac, Cover::None);
+                    let atk = crate::attack(&mut rng, final_mode, atk_spec.to_hit, actor_ac);
+                    log_attack(&mut logs, &atk_spec.name, &atk);
+                    if atk.hit {
+                        let is_crit = atk.is_crit;
+                        let dtype = atk_spec.damage_type.unwrap_or(DamageType::Slashing);
+                        let dmg = crate::damage(&mut rng, atk_spec.dice, 0, is_crit);
+                        log_damage(
+                            &mut logs,
+                            &atk_spec.name,
+                            atk_spec.dice,
+                            0,
+                            is_crit,
+                            dmg,
+                            Some(dtype),
+                        );
+                        let dropped = apply_damage(
+                            "Actor",
+                            &mut actor_health,
+                            &mut actor_conditions,
+                            dmg,
+                            |msg| logs.push(msg),
+                        );
+                        logs.push(format!("[HP][Actor] {} HP", actor_health.hp));
+                        if dropped {
+                            logs.push("[ITEM][Actor] drops to 0 HP".to_string());
+                        }
+                        if let Some(spec) = atk_spec.apply_condition.as_ref() {
+                            maybe_apply_on_hit_condition(
+                                "Actor",
+                                &mut actor_conditions,
+                                spec,
+                                |ability, _dc| {
+                                    let roll = rng.d20(AdMode::Normal) as i32;
+                                    let total = roll + actor.save_mod(ability);
+                                    (roll, total)
+                                },
+                                |msg| logs.push(msg),
+                            );
+                        }
+                    }
+                }
+            }
+
+            process_turn_boundary(
+                TurnBoundary::EndOfTurn,
+                &name,
+                &mut enemy.conditions,
+                |ability, _dc| {
+                    let roll = rng.d20(AdMode::Normal) as i32;
+                    let total = roll + enemy.data.ability_mod(ability);
+                    (roll, total)
+                },
+                |msg| logs.push(msg),
+            );
+        }
+    }
+
+    let remaining_enemies = enemies.iter().filter(|e| e.hp > 0).count() as u32;
+    let survived = actor_health.hp > 0 && !matches!(actor_health.state, LifeState::Dead);
+
+    logs.push(format!(
+        "[ENCOUNTER_END] survived={} remaining_enemies={} rounds={}",
+        survived, remaining_enemies, rounds
+    ));
+
+    Ok(EncounterResult {
+        survived,
+        rounds,
+        remaining_enemies,
+        log: logs,
+    })
+}
+
+fn parse_target_json(text: &str) -> Result<TargetData> {
+    serde_json::from_str(text).context("failed to parse target JSON")
+}
+
+fn parse_weapons_json(text: &str) -> Result<Vec<Weapon>> {
+    serde_json::from_str(text).context("failed to parse weapons JSON")
 }
 
 fn find_weapon<'a>(weapons: &'a [Weapon], name: &str) -> Option<&'a Weapon> {
@@ -425,14 +797,12 @@ fn parse_condition_list(src: &[String]) -> Vec<ActiveCondition> {
             "restrained" => Some(ConditionKind::Restrained),
             _ => None,
         })
-        .map(|kind| ActiveCondition {
-            kind,
-            save_ends_each_turn: false,
-            end_phase: None,
-            end_save: None,
-            pending_one_turn: false,
-        })
+        .map(make_active_condition)
         .collect()
+}
+
+fn collect_damage_types(src: &[String]) -> HashSet<DamageType> {
+    src.iter().filter_map(|s| parse_damage_type(s)).collect()
 }
 
 fn parse_damage_type(s: &str) -> Option<DamageType> {
@@ -483,6 +853,16 @@ fn sample_fighter() -> Actor {
         proficiency_bonus: 2,
         save_proficiencies: save,
         skill_proficiencies: skills,
+    }
+}
+
+fn make_active_condition(kind: ConditionKind) -> ActiveCondition {
+    ActiveCondition {
+        kind,
+        save_ends_each_turn: false,
+        end_phase: None,
+        end_save: None,
+        pending_one_turn: false,
     }
 }
 

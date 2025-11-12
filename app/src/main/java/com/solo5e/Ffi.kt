@@ -6,4 +6,6 @@ object Ffi {
     external fun roll(seed: Long, n: Int, sides: Int): Int
     external fun echoJsonLen(json: String): Int
     external fun simulateDuelJson(json: String): String
+    external fun simulateDuelManyJson(json: String): String
+    external fun simulateEncounterJson(json: String): String
 }
