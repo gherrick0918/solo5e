@@ -73,7 +73,7 @@ mod tests {
         let result1 = roll_internal(42, 3, 6);
         let result2 = roll_internal(42, 3, 6); // Same seed should give same result
         assert_eq!(result1, result2);
-        assert!(result1 >= 3 && result1 <= 18); // 3d6 range
+        assert!((3..=18).contains(&result1)); // 3d6 range
     }
 
     #[test]

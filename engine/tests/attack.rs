@@ -10,6 +10,8 @@ fn attack_flags_and_logic_are_self_consistent() {
     // flags match roll
     assert_eq!(res.nat20, res.roll == 20);
     assert_eq!(res.nat1, res.roll == 1);
+    assert_eq!(res.is_crit, res.nat20);
+    assert_eq!(res.roll as u8, *res.raw_rolls.last().unwrap());
 
     // hit logic = nat20 OR (!nat1 AND total >= ac)
     let expected_hit = res.nat20 || (!res.nat1 && res.total >= res.ac);

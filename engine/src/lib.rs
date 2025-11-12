@@ -54,17 +54,38 @@ pub enum DamageType {
 
 pub struct Dice {
     rng: ChaCha8Rng,
+    scripted: Vec<u8>,
+    scripted_pos: usize,
 }
 
 impl Dice {
     pub fn from_seed(seed: u64) -> Self {
         Self {
             rng: ChaCha8Rng::seed_from_u64(seed),
+            scripted: Vec::new(),
+            scripted_pos: 0,
         }
     }
 
+    pub fn from_scripted(scripted: Vec<u8>) -> Self {
+        Self {
+            rng: ChaCha8Rng::seed_from_u64(0),
+            scripted,
+            scripted_pos: 0,
+        }
+    }
+
+    fn next_in_range(&mut self, sides: u8) -> u8 {
+        if self.scripted_pos < self.scripted.len() {
+            let value = self.scripted[self.scripted_pos];
+            self.scripted_pos += 1;
+            return value;
+        }
+        self.rng.gen_range(1..=sides)
+    }
+
     pub fn d20(&mut self, mode: AdMode) -> u8 {
-        let mut roll = || self.rng.gen_range(1..=20);
+        let mut roll = || self.next_in_range(20);
         match mode {
             AdMode::Normal => roll(),
             AdMode::Advantage => {
@@ -82,7 +103,7 @@ impl Dice {
 
     /// Roll a generic die: 1..=sides
     pub fn die(&mut self, sides: u8) -> u8 {
-        self.rng.gen_range(1..=sides)
+        self.next_in_range(sides)
     }
 }
 
@@ -321,7 +342,7 @@ impl DamageDice {
     }
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Clone, Debug)]
 pub struct AttackResult {
     pub roll: i32,
     pub total: i32,
@@ -330,14 +351,37 @@ pub struct AttackResult {
     pub nat20: bool,
     pub nat1: bool,
     pub hit: bool,
+    pub is_crit: bool,
+    pub raw_rolls: Vec<u8>,
 }
 
 /// 5e: nat20 always hits, nat1 always misses; otherwise total >= AC.
 pub fn attack(dice: &mut Dice, mode: AdMode, bonus: i32, ac: i32) -> AttackResult {
-    let r = dice.d20(mode) as i32;
-    let nat20 = r == 20;
-    let nat1 = r == 1;
-    let total = r + bonus;
+    let mut raw_rolls = Vec::new();
+    let kept = match mode {
+        AdMode::Normal => {
+            let r = dice.die(20);
+            raw_rolls.push(r);
+            r
+        }
+        AdMode::Advantage => {
+            let a = dice.die(20);
+            let b = dice.die(20);
+            raw_rolls.push(a);
+            raw_rolls.push(b);
+            a.max(b)
+        }
+        AdMode::Disadvantage => {
+            let a = dice.die(20);
+            let b = dice.die(20);
+            raw_rolls.push(a);
+            raw_rolls.push(b);
+            a.min(b)
+        }
+    } as i32;
+    let nat20 = kept == 20;
+    let nat1 = kept == 1;
+    let total = kept + bonus;
     let hit = if nat20 {
         true
     } else if nat1 {
@@ -346,13 +390,15 @@ pub fn attack(dice: &mut Dice, mode: AdMode, bonus: i32, ac: i32) -> AttackResul
         total >= ac
     };
     AttackResult {
-        roll: r,
+        roll: kept,
         total,
         ac,
         bonus,
         nat20,
         nat1,
         hit,
+        is_crit: nat20,
+        raw_rolls,
     }
 }
 
@@ -398,4 +444,22 @@ pub struct Weapon {
     pub versatile: Option<DamageDice>,
     #[serde(default)]
     pub damage_type: Option<DamageType>,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum Cover {
+    #[default]
+    None,
+    Half,
+    ThreeQuarters,
+}
+
+impl Cover {
+    pub fn ac_bonus(self) -> i32 {
+        match self {
+            Cover::None => 0,
+            Cover::Half => 2,
+            Cover::ThreeQuarters => 5,
+        }
+    }
 }
