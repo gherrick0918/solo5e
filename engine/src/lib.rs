@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
 pub mod api;
+pub mod checks;
+pub mod combat;
 pub mod conditions;
 pub mod content;
 pub mod life;
