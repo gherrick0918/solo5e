@@ -57,6 +57,11 @@
       "type": "array",
       "items": { "$ref": "#/definitions/conditionKind" },
       "default": []
+    },
+    "cover": {
+      "type": "string",
+      "enum": ["none", "half", "three_quarters"],
+      "default": "none"
     }
   },
   "required": ["name", "ac", "hp"],

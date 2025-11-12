@@ -32,6 +32,12 @@ fn main() {
 
     // Test determinism
     println!("Determinism check:");
-    println!("  First call:  roll_test(999, 2, 10) = {}", roll_test(999, 2, 10));
-    println!("  Second call: roll_test(999, 2, 10) = {}", roll_test(999, 2, 10));
+    println!(
+        "  First call:  roll_test(999, 2, 10) = {}",
+        roll_test(999, 2, 10)
+    );
+    println!(
+        "  Second call: roll_test(999, 2, 10) = {}",
+        roll_test(999, 2, 10)
+    );
 }

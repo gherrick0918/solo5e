@@ -63,6 +63,10 @@
             "type": "array",
             "items": { "$ref": "target.schema.json#/definitions/conditionKind" },
             "default": []
+          },
+          "cover": {
+            "type": "string",
+            "enum": ["none", "half", "three_quarters"]
           }
         },
         "required": ["name", "ac", "hp"]
